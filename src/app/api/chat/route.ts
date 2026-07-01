@@ -24,6 +24,16 @@ type Message = {
 };
 
 async function loadPdfParser() {
+  // Polyfill browser APIs pdfjs-dist needs in Node.js
+  try {
+    const canvas = await import("@napi-rs/canvas");
+    globalThis.DOMMatrix ??= canvas.DOMMatrix as unknown as typeof DOMMatrix;
+    globalThis.ImageData ??= canvas.ImageData as unknown as typeof ImageData;
+    globalThis.Path2D ??= canvas.Path2D as unknown as typeof Path2D;
+  } catch (e) {
+    console.warn("Failed to polyfill canvas APIs:", e);
+  }
+
   const { PDFParse } = await import("pdf-parse");
   return PDFParse;
 }
