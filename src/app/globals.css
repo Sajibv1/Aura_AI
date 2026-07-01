@@ -853,6 +853,16 @@ body {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
+.login-credit {
+  position: fixed;
+  bottom: 12px;
+  right: 16px;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
 /* ─── User Name ─── */
 
 .user-name {

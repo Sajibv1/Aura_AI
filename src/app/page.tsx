@@ -215,6 +215,7 @@ export default function Home() {
             Sign in with Google
           </button>
         </div>
+        <div className="login-credit">Nur Mohammod Sajib</div>
       </div>
     );
   }
