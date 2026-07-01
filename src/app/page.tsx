@@ -1,152 +1,254 @@
 "use client";
 
-import { useState, useRef, useEffect, ChangeEvent, FormEvent } from "react";
+import { useState, useRef, useEffect, useCallback, ChangeEvent, FormEvent } from "react";
 import ReactMarkdown from "react-markdown";
-import { Send, Image as ImageIcon, Link as LinkIcon, X, Loader2, FileText } from "lucide-react";
-
-type Message = {
-  role: "user" | "assistant";
-  content: string;
-};
-
-type Attachment = {
-  type: "image" | "url" | "pdf";
-  data: string; // base64 for image/pdf, url string for url
-  name?: string; // filename for display
-};
+import {
+  Send, Image as ImageIcon, Link as LinkIcon, X, Loader2, FileText,
+} from "lucide-react";
+import { useConversations } from "@/hooks/useConversations";
+import { useChat, type Attachment } from "@/hooks/useChat";
+import { useTheme } from "@/hooks/useTheme";
+import { useCustomInstructions } from "@/hooks/useCustomInstructions";
+import { Sidebar } from "@/components/Sidebar";
+import { ModelSelector } from "@/components/ModelSelector";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { ExportButton } from "@/components/ExportButton";
+import { CustomInstructionsModal } from "@/components/CustomInstructionsModal";
 
 export default function Home() {
-  const [messages, setMessages] = useState<Message[]>([
-    { role: "assistant", content: "Hello! I can answer questions, read handwritten/typed text from images, and scrape information from links. How can I help you today?" }
-  ]);
+  const themeHook = useTheme();
+  const instructionsHook = useCustomInstructions();
+  const chat = useChat();
+
+  const {
+    conversations, activeConversation, activeId, loaded,
+    switchConversation, newConversation, addMessage,
+    updateLastMessage, deleteConversation, renameConversation,
+  } = useConversations();
+
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [urlInput, setUrlInput] = useState("");
-  
+  const [streamingContent, setStreamingContent] = useState("");
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [model, setModel] = useState("llama-3.3-70b-versatile");
+  const [dragOver, setDragOver] = useState(false);
+  const [initDone, setInitDone] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dropRef = useRef<HTMLDivElement>(null);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
+  // Initialise first conversation
+  useEffect(() => {
+    if (loaded && !initDone) {
+      setInitDone(true);
+      if (conversations.length === 0) {
+        newConversation();
+      }
+    }
+  }, [loaded, conversations.length, newConversation, initDone]);
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, isLoading]);
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [activeConversation?.messages, streamingContent]);
 
-  const handleFileUpload = (e: ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = useCallback((file: File) => {
+    const isPdf = file.type === "application/pdf";
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setAttachments((prev) => [...prev, { type: isPdf ? "pdf" : "image", data: reader.result as string, name: file.name }]);
+    };
+    reader.readAsDataURL(file);
+  }, []);
+
+  const onFileInputChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const isPdf = file.type === "application/pdf";
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64String = reader.result as string;
-        setAttachments(prev => [...prev, { 
-          type: isPdf ? "pdf" : "image", 
-          data: base64String,
-          name: file.name
-        }]);
-      };
-      reader.readAsDataURL(file);
+      handleFileUpload(file);
+      e.target.value = "";
     }
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-  };
+  }, [handleFileUpload]);
 
-  const handleAddUrl = (e: FormEvent) => {
+  const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    if (urlInput.trim() && (urlInput.startsWith('http://') || urlInput.startsWith('https://'))) {
-      setAttachments(prev => [...prev, { type: "url", data: urlInput.trim() }]);
+    setDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file && (file.type.startsWith("image/") || file.type === "application/pdf")) {
+      handleFileUpload(file);
+    }
+  }, [handleFileUpload]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+  }, []);
+
+  const handleAddUrl = useCallback((e: FormEvent) => {
+    e.preventDefault();
+    if (urlInput.trim() && (urlInput.startsWith("http://") || urlInput.startsWith("https://"))) {
+      setAttachments((prev) => [...prev, { type: "url", data: urlInput.trim() }]);
       setUrlInput("");
       setShowUrlInput(false);
     }
-  };
+  }, [urlInput]);
 
-  const removeAttachment = (index: number) => {
-    setAttachments(prev => prev.filter((_, i) => i !== index));
-  };
+  const removeAttachment = useCallback((index: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  }, []);
 
-  const handleSend = async (e?: FormEvent) => {
-    if (e) e.preventDefault();
-    
-    if (!input.trim() && attachments.length === 0) return;
-
-    const userMessage: Message = { role: "user", content: input.trim() };
-    const newMessages = [...messages, userMessage];
-    
-    setMessages(newMessages);
+  const handleNewChat = useCallback(() => {
+    newConversation();
+    setStreamingContent("");
+    setSuggestions([]);
+    setAttachments([]);
     setInput("");
-    setIsLoading(true);
-    
+  }, [newConversation]);
+
+  const handleSelectConv = useCallback((id: string) => {
+    switchConversation(id);
+    setStreamingContent("");
+    setSuggestions([]);
+  }, [switchConversation]);
+
+  const handleSend = useCallback(async (e?: FormEvent) => {
+    if (e) e.preventDefault();
+    if (!input.trim() && attachments.length === 0) return;
+    if (!activeId) return;
+
     const currentAttachments = [...attachments];
     setAttachments([]);
+    setSuggestions([]);
 
-    try {
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: newMessages,
-          attachments: currentAttachments
-        })
-      });
+    const userContent = input.trim();
+    setInput("");
 
-      if (!response.ok) {
-        throw new Error("Failed to fetch response");
-      }
+    if (!userContent && currentAttachments.length === 0) return;
 
-      const data = await response.json();
-      setMessages([...newMessages, { role: "assistant", content: data.reply }]);
-    } catch (error) {
-      console.error(error);
-      setMessages([...newMessages, { role: "assistant", content: "Sorry, I encountered an error. Please try again." }]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    // Add user message
+    addMessage(activeId, { role: "user", content: userContent || "(attachment sent)" });
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // Prepare messages for API
+    const conv = conversations.find((c) => c.id === activeId);
+    const apiMessages = conv ? [...conv.messages, { role: "user" as const, content: userContent || "(attachment sent)" }] : [];
+
+    setStreamingContent("");
+
+    // Add empty assistant message placeholder for streaming
+    addMessage(activeId, { role: "assistant", content: "" });
+
+    chat.send(apiMessages, currentAttachments, model, instructionsHook.instructions, {
+      onToken(token) {
+        setStreamingContent((prev) => prev + token);
+      },
+      onDone(full, newSuggestions) {
+        setStreamingContent("");
+        updateLastMessage(activeId!, full);
+        setSuggestions(newSuggestions);
+      },
+      onError(err) {
+        setStreamingContent("");
+        updateLastMessage(activeId!, `Error: ${err}`);
+      },
+    });
+  }, [input, attachments, activeId, addMessage, conversations, chat, model, instructionsHook.instructions, updateLastMessage]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
-  };
+  }, [handleSend]);
+
+  const handleSuggestionClick = useCallback((suggestion: string) => {
+    setInput(suggestion);
+    setSuggestions([]);
+  }, []);
+
+  const messages = activeConversation?.messages || [];
 
   return (
-    <main className="app-container">
-      <header className="header">
-        <h1>Aura</h1>
-        <p>Your Intelligent Multi-modal RAG Assistant</p>
-      </header>
+    <div className={`app-layout ${dragOver ? "drag-over" : ""}`} ref={dropRef}>
+      <Sidebar
+        conversations={conversations}
+        activeId={activeId}
+        onSelect={handleSelectConv}
+        onNew={handleNewChat}
+        onDelete={deleteConversation}
+        onRename={renameConversation}
+        collapsed={sidebarCollapsed}
+        onToggle={() => setSidebarCollapsed((c) => !c)}
+      />
 
-      <section className="chat-container">
-        <div className="messages-area">
-          {messages.map((msg, idx) => (
-            <div key={idx} className={`message ${msg.role}`}>
-              <div className="message-bubble">
-                {msg.role === "assistant" ? (
-                  <ReactMarkdown>{msg.content}</ReactMarkdown>
-                ) : (
-                  <p>{msg.content}</p>
-                )}
+      <main className="main-area">
+        <header className="header">
+          <div className="header-left">
+            <h1>Aura</h1>
+            {activeConversation && <ModelSelector value={model} onChange={setModel} />}
+          </div>
+          <div className="header-right">
+            <ExportButton conversation={activeConversation} />
+            <CustomInstructionsModal value={instructionsHook.instructions} onChange={instructionsHook.setInstructions} />
+            <ThemeToggle theme={themeHook.theme} onToggle={themeHook.toggle} />
+          </div>
+        </header>
+
+        <div
+          className="chat-container"
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+        >
+          {dragOver && <div className="drop-overlay"><div className="drop-indicator">Drop file here</div></div>}
+
+          {messages.length === 0 && !chat.isLoading ? (
+            <div className="welcome">
+              <h2>Aura</h2>
+              <p>Your Intelligent Multi-modal RAG Assistant</p>
+              <div className="welcome-hints">
+                <div className="hint"><ImageIcon size={16} /> Attach images for analysis</div>
+                <div className="hint"><LinkIcon size={16} /> Share URLs for context</div>
+                <div className="hint"><FileText size={16} /> Upload PDFs to extract text</div>
               </div>
             </div>
-          ))}
-          {isLoading && (
-            <div className="message assistant">
-              <div className="message-bubble">
-                <div className="typing-indicator">
-                  <div className="typing-dot"></div>
-                  <div className="typing-dot"></div>
-                  <div className="typing-dot"></div>
+          ) : (
+            <div className="messages-area">
+              {messages.map((msg, idx) => (
+                <div key={idx} className={`message ${msg.role}`}>
+                  <div className="message-bubble">
+                    {msg.role === "assistant" ? (
+                      <ReactMarkdown>
+                        {idx === messages.length - 1 && msg.content === "" ? streamingContent || "" : msg.content}
+                      </ReactMarkdown>
+                    ) : (
+                      <p>{msg.content}</p>
+                    )}
+                  </div>
                 </div>
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
+          )}
+
+          {suggestions.length > 0 && (
+            <div className="suggestions">
+              <p className="suggestions-label">Follow-up questions:</p>
+              <div className="suggestions-list">
+                {suggestions.map((s, i) => (
+                  <button key={i} className="suggestion-chip" onClick={() => handleSuggestionClick(s)}>
+                    {s}
+                  </button>
+                ))}
               </div>
             </div>
           )}
-          <div ref={messagesEndRef} />
         </div>
 
         <div className="input-area">
@@ -155,86 +257,60 @@ export default function Home() {
               <div className="active-attachments">
                 {attachments.map((att, idx) => (
                   <div key={idx} className="active-attachment">
-                    {att.type === 'image' ? (
-                      <img src={att.data} alt="Upload" style={{ width: 24, height: 24, borderRadius: 4, objectFit: 'cover' }} />
-                    ) : att.type === 'pdf' ? (
+                    {att.type === "image" ? (
+                      <img src={att.data} alt="" style={{ width: 24, height: 24, borderRadius: 4, objectFit: "cover" }} />
+                    ) : att.type === "pdf" ? (
                       <FileText size={14} />
                     ) : (
                       <LinkIcon size={14} />
                     )}
-                    <span style={{ maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {att.name || (att.type === 'image' ? 'Image' : att.data)}
-                    </span>
-                    <button onClick={() => removeAttachment(idx)}>
-                      <X size={14} />
-                    </button>
+                    <span className="att-name">{att.name || (att.type === "image" ? "Image" : att.data)}</span>
+                    <button className="icon-btn-xs" onClick={() => removeAttachment(idx)}><X size={14} /></button>
                   </div>
                 ))}
               </div>
             )}
-            
+
             <div className="input-row">
-              <div style={{ position: 'relative' }}>
-                <button 
-                  type="button" 
-                  className="icon-btn" 
-                  onClick={() => setShowUrlInput(!showUrlInput)}
-                  title="Attach Link"
-                >
+              <div style={{ position: "relative" }}>
+                <button type="button" className="icon-btn" onClick={() => setShowUrlInput((v) => !v)} title="Attach Link">
                   <LinkIcon size={20} />
                 </button>
                 {showUrlInput && (
                   <div className="url-popover">
-                    <form onSubmit={handleAddUrl} style={{ display: 'flex', gap: '8px' }}>
-                      <input 
-                        autoFocus
-                        type="url" 
-                        placeholder="https://example.com" 
-                        value={urlInput}
-                        onChange={(e) => setUrlInput(e.target.value)}
-                      />
+                    <form onSubmit={handleAddUrl} style={{ display: "flex", gap: "8px" }}>
+                      <input autoFocus type="url" placeholder="https://example.com" value={urlInput} onChange={(e) => setUrlInput(e.target.value)} />
                       <button type="submit">Add</button>
                     </form>
                   </div>
                 )}
               </div>
 
-              <button 
-                type="button" 
-                className="icon-btn" 
-                onClick={() => fileInputRef.current?.click()}
-                title="Upload Image or PDF"
-              >
+              <button type="button" className="icon-btn" onClick={() => fileInputRef.current?.click()} title="Upload Image or PDF">
                 <ImageIcon size={20} />
               </button>
-              <input 
-                type="file" 
-                accept="image/*,application/pdf" 
-                ref={fileInputRef} 
-                style={{ display: "none" }} 
-                onChange={handleFileUpload}
-              />
+              <input type="file" accept="image/*,application/pdf" ref={fileInputRef} style={{ display: "none" }} onChange={onFileInputChange} />
 
-              <textarea 
-                className="input-field" 
-                placeholder="Ask a question or describe the attached file..." 
+              <textarea
+                className="input-field"
+                placeholder="Ask a question or describe the attached file..."
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 rows={1}
               />
 
-              <button 
-                className="send-btn" 
-                onClick={() => handleSend()} 
-                disabled={isLoading || (!input.trim() && attachments.length === 0)}
+              <button
+                className="send-btn"
+                onClick={() => handleSend()}
+                disabled={chat.isLoading || (!input.trim() && attachments.length === 0)}
               >
-                {isLoading ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
+                {chat.isLoading ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
               </button>
             </div>
           </div>
         </div>
-      </section>
-    </main>
+      </main>
+    </div>
   );
 }

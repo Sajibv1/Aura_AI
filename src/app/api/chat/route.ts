@@ -5,10 +5,17 @@ import * as cheerio from "cheerio";
 
 export const runtime = "nodejs";
 
-// Initialize Groq client
 const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY || "", // Ensure you have GROQ_API_KEY in your .env
+  apiKey: process.env.GROQ_API_KEY || "",
 });
+
+const AVAILABLE_MODELS = [
+  "llama-3.3-70b-versatile",
+  "llama-4-scout-17b-16e-instruct",
+  "mixtral-8x7b-32768",
+  "gemma2-9b-it",
+  "deepseek-r1-distill-llama-70b",
+] as const;
 
 type Attachment = {
   type: "image" | "url" | "pdf";
@@ -25,7 +32,6 @@ type Message = {
 };
 
 async function loadPdfParser() {
-  // Polyfill browser APIs pdfjs-dist needs in Node.js
   try {
     const canvas = await import("@napi-rs/canvas");
     globalThis.DOMMatrix ??= canvas.DOMMatrix as unknown as typeof DOMMatrix;
@@ -34,140 +40,194 @@ async function loadPdfParser() {
   } catch (e) {
     console.warn("Failed to polyfill canvas APIs:", e);
   }
-
   const { PDFParse } = await import("pdf-parse");
   return PDFParse;
 }
 
+async function scrapeUrls(urls: string[]): Promise<string> {
+  let context = "";
+  for (const url of urls) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        const html = await res.text();
+        const $ = cheerio.load(html);
+        $("script, style").remove();
+        const text = $("body").text().replace(/\s+/g, " ").trim();
+        context += `\n\n--- Content from ${url} ---\n${text.substring(0, 5000)}\n--- End Content ---\n`;
+      }
+    } catch (err) {
+      console.error("Error scraping URL:", url, err);
+      context += `\n\n--- Error scraping ${url} ---\n`;
+    }
+  }
+  return context;
+}
+
+async function parsePdfs(pdfs: Attachment[]): Promise<string> {
+  let context = "";
+  for (const pdf of pdfs) {
+    try {
+      const base64Data = pdf.data.split(",")[1];
+      if (base64Data) {
+        const PDFParse = await loadPdfParser();
+        const buffer = Buffer.from(base64Data, "base64");
+        const parser = new PDFParse({ data: buffer });
+        const pdfData = await parser.getText();
+        await parser.destroy();
+        context += `\n\n--- Content from PDF ---\n${pdfData.text.substring(0, 10000)}\n--- End Content ---\n`;
+      }
+    } catch (err) {
+      console.error("Error parsing PDF:", err);
+      context += `\n\n--- Error reading PDF ---\n`;
+    }
+  }
+  return context;
+}
+
+function buildMessages(
+  messages: Message[],
+  scrapedContext: string,
+  images: Attachment[],
+  customInstructions: string,
+): ChatCompletionMessageParam[] {
+  const formatted: ChatCompletionMessageParam[] = [];
+
+  let systemContent = "";
+  if (customInstructions) {
+    systemContent += `Custom instructions: ${customInstructions}\n\n`;
+  }
+  if (scrapedContext) {
+    systemContent += `You are Aura, an intelligent AI RAG assistant. You have been provided with the following scraped webpage context. Use it to answer the user's queries if relevant.\n${scrapedContext}`;
+  } else {
+    systemContent += `You are Aura, an intelligent AI assistant. Be helpful, concise, and friendly.`;
+  }
+  formatted.push({ role: "system", content: systemContent.trim() });
+
+  const lastMessage = messages[messages.length - 1];
+  const previousMessages = messages.slice(0, -1);
+
+  for (const msg of previousMessages) {
+    if (msg.role === "system") {
+      formatted.push({ role: "system", content: msg.content as string });
+    } else if (msg.role === "user") {
+      formatted.push({ role: "user", content: msg.content as string });
+    } else {
+      formatted.push({ role: "assistant", content: msg.content as string });
+    }
+  }
+
+  if (images.length > 0) {
+    const text = typeof lastMessage.content === "string"
+      ? lastMessage.content
+      : "Please analyze this image.";
+    const contentArray: ImageContentPart[] = [
+      { type: "text", text: text || "Please analyze this image." },
+    ];
+    for (const img of images) {
+      contentArray.push({ type: "image_url", image_url: { url: img.data } });
+    }
+    formatted.push({ role: "user", content: contentArray });
+  } else {
+    if (lastMessage.role === "system") {
+      formatted.push({ role: "system", content: lastMessage.content as string });
+    } else if (lastMessage.role === "user") {
+      formatted.push({ role: "user", content: lastMessage.content as string });
+    } else {
+      formatted.push({ role: "assistant", content: lastMessage.content as string });
+    }
+  }
+
+  return formatted;
+}
+
 export async function POST(req: Request) {
   try {
-    const { messages, attachments = [] } = await req.json() as {
+    const body = await req.json() as {
       messages?: Message[];
       attachments?: Attachment[];
+      model?: string;
+      customInstructions?: string;
     };
 
-    if (!messages || !Array.isArray(messages)) {
+    if (!body.messages || !Array.isArray(body.messages)) {
       return NextResponse.json({ error: "Invalid messages format" }, { status: 400 });
     }
 
-    // Scrape URLs if any
-    let scrapedContext = "";
-    const urls = attachments.filter((att: Attachment) => att.type === "url").map((att: Attachment) => att.data);
-    
-    for (const url of urls) {
-      try {
-        const res = await fetch(url);
-        if (res.ok) {
-          const html = await res.text();
-          const $ = cheerio.load(html);
-          // Remove scripts and styles
-          $('script, style').remove();
-          const text = $('body').text().replace(/\s+/g, ' ').trim();
-          scrapedContext += `\n\n--- Content from ${url} ---\n${text.substring(0, 5000)}\n--- End Content ---\n`;
-        }
-      } catch (err) {
-        console.error("Error scraping URL:", url, err);
-        scrapedContext += `\n\n--- Error scraping ${url} ---\n`;
-      }
-    }
+    const model = body.model && AVAILABLE_MODELS.includes(body.model as typeof AVAILABLE_MODELS[number])
+      ? body.model
+      : body.attachments?.some((a: Attachment) => a.type === "image")
+        ? "meta-llama/llama-4-scout-17b-16e-instruct"
+        : "llama-3.3-70b-versatile";
 
-    const images = attachments.filter((att: Attachment) => att.type === "image");
-    const pdfs = attachments.filter((att: Attachment) => att.type === "pdf");
-    
-    for (const pdf of pdfs) {
-      try {
-        const base64Data = pdf.data.split(",")[1];
-        if (base64Data) {
-          const PDFParse = await loadPdfParser();
-          const buffer = Buffer.from(base64Data, "base64");
-          const parser = new PDFParse({ data: buffer });
-          const pdfData = await parser.getText();
-          await parser.destroy();
-          scrapedContext += `\n\n--- Content from PDF ---\n${pdfData.text.substring(0, 10000)}\n--- End Content ---\n`;
-        }
-      } catch (err) {
-        console.error("Error parsing PDF:", err);
-        scrapedContext += `\n\n--- Error reading PDF ---\n`;
-      }
-    }
-    
-    // Prepare Groq messages
-    const formattedMessages: ChatCompletionMessageParam[] = [];
-    
-    // Add system message if there is scraped context
-    if (scrapedContext) {
-      formattedMessages.push({
-        role: "system",
-        content: `You are Aura, an intelligent AI RAG assistant. You have been provided with the following scraped webpage context. Use it to answer the user's queries if relevant.\n${scrapedContext}`
-      });
-    } else {
-      formattedMessages.push({
-        role: "system",
-        content: `You are Aura, an intelligent AI assistant. Be helpful, concise, and friendly.`
-      });
-    }
+    const [scrapedContext, pdfContext] = await Promise.all([
+      scrapeUrls(body.attachments?.filter((a: Attachment) => a.type === "url").map((a: Attachment) => a.data) || []),
+      parsePdfs(body.attachments?.filter((a: Attachment) => a.type === "pdf") || []),
+    ]);
+    const combinedContext = scrapedContext + pdfContext;
 
-    const lastMessage = messages[messages.length - 1];
-    const previousMessages = messages.slice(0, -1);
+    const images = body.attachments?.filter((a: Attachment) => a.type === "image") || [];
+    const formattedMessages = buildMessages(body.messages, combinedContext, images, body.customInstructions || "");
 
-    // Add previous messages (text only)
-    for (const msg of previousMessages) {
-      if (msg.role === "system") {
-        formattedMessages.push({ role: "system", content: msg.content as string });
-      } else if (msg.role === "user") {
-        formattedMessages.push({ role: "user", content: msg.content as string });
-      } else {
-        formattedMessages.push({ role: "assistant", content: msg.content as string });
-      }
-    }
-
-    // Handle last message which may include images
-    if (images.length > 0) {
-      const lastMessageText = typeof lastMessage.content === "string"
-        ? lastMessage.content
-        : "Please analyze this image.";
-      const contentArray: ImageContentPart[] = [
-        { type: "text", text: lastMessageText || "Please analyze this image." }
-      ];
-      
-      for (const img of images) {
-        contentArray.push({
-          type: "image_url",
-          image_url: {
-            url: img.data // Base64 URL
-          }
-        });
-      }
-
-      formattedMessages.push({
-        role: "user",
-        content: contentArray
-      });
-    } else {
-      if (lastMessage.role === "system") {
-        formattedMessages.push({ role: "system", content: lastMessage.content as string });
-      } else if (lastMessage.role === "user") {
-        formattedMessages.push({ role: "user", content: lastMessage.content as string });
-      } else {
-        formattedMessages.push({ role: "assistant", content: lastMessage.content as string });
-      }
-    }
-
-    // meta-llama/llama-4-scout-17b-16e-instruct for images
-    // llama-3.3-70b-versatile for text
-    const model = images.length > 0 ? "meta-llama/llama-4-scout-17b-16e-instruct" : "llama-3.3-70b-versatile";
-
-    const completion = await groq.chat.completions.create({
+    const stream = await groq.chat.completions.create({
       messages: formattedMessages,
-      model: model,
+      model,
       temperature: 0.5,
       max_tokens: 2048,
+      stream: true,
     });
 
-    const reply = completion.choices[0]?.message?.content || "No response generated.";
+    const encoder = new TextEncoder();
 
-    return NextResponse.json({ reply });
+    const readable = new ReadableStream({
+      async start(controller) {
+        let fullReply = "";
 
+        try {
+          for await (const chunk of stream) {
+            const token = chunk.choices[0]?.delta?.content || "";
+            if (token) {
+              fullReply += token;
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`));
+            }
+          }
+
+          // Generate follow-up suggestions
+          let suggestions: string[] = [];
+          try {
+            const suggestCompletion = await groq.chat.completions.create({
+              messages: [
+                { role: "system", content: "Generate 3 short follow-up questions the user might ask next based on this conversation. Return only a JSON array of strings, nothing else." },
+                ...formattedMessages,
+                { role: "assistant", content: fullReply },
+              ],
+              model: "llama-3.3-70b-versatile",
+              temperature: 0.7,
+              max_tokens: 200,
+            });
+            const raw = suggestCompletion.choices[0]?.message?.content || "[]";
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) suggestions = parsed.slice(0, 3);
+          } catch {
+            // suggestions silently fail
+          }
+
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true, suggestions })}\n\n`));
+        } catch (err) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: (err as Error).message })}\n\n`));
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new NextResponse(readable, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    });
   } catch (error: unknown) {
     console.error("API Error:", error);
     const message = error instanceof Error ? error.message : "Something went wrong";
