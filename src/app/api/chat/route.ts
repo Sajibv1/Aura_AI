@@ -10,14 +10,6 @@ const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY || "",
 });
 
-const AVAILABLE_MODELS = [
-  "llama-3.3-70b-versatile",
-  "llama-4-scout-17b-16e-instruct",
-  "mixtral-8x7b-32768",
-  "gemma2-9b-it",
-  "deepseek-r1-distill-llama-70b",
-] as const;
-
 type Attachment = {
   type: "image" | "url" | "pdf";
   data: string;
@@ -152,19 +144,12 @@ export async function POST(req: Request) {
     const body = await req.json() as {
       messages?: Message[];
       attachments?: Attachment[];
-      model?: string;
       customInstructions?: string;
     };
 
     if (!body.messages || !Array.isArray(body.messages)) {
       return NextResponse.json({ error: "Invalid messages format" }, { status: 400 });
     }
-
-    const model = body.model && AVAILABLE_MODELS.includes(body.model as typeof AVAILABLE_MODELS[number])
-      ? body.model
-      : body.attachments?.some((a: Attachment) => a.type === "image")
-        ? "meta-llama/llama-4-scout-17b-16e-instruct"
-        : "llama-3.3-70b-versatile";
 
     const [scrapedContext, pdfContext] = await Promise.all([
       scrapeUrls(body.attachments?.filter((a: Attachment) => a.type === "url").map((a: Attachment) => a.data) || []),
@@ -174,6 +159,8 @@ export async function POST(req: Request) {
 
     const images = body.attachments?.filter((a: Attachment) => a.type === "image") || [];
     const formattedMessages = buildMessages(body.messages, combinedContext, images, body.customInstructions || "");
+
+    const model = images.length > 0 ? "meta-llama/llama-4-scout-17b-16e-instruct" : "llama-3.3-70b-versatile";
 
     const stream = await groq.chat.completions.create({
       messages: formattedMessages,

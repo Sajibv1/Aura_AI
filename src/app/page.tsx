@@ -11,7 +11,6 @@ import { useChat, type Attachment } from "@/hooks/useChat";
 import { useTheme } from "@/hooks/useTheme";
 import { useCustomInstructions } from "@/hooks/useCustomInstructions";
 import { Sidebar } from "@/components/Sidebar";
-import { ModelSelector } from "@/components/ModelSelector";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { ExportButton } from "@/components/ExportButton";
 import { CustomInstructionsModal } from "@/components/CustomInstructionsModal";
@@ -36,7 +35,6 @@ export default function Home() {
   const [streamingContent, setStreamingContent] = useState("");
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [model, setModel] = useState("llama-3.3-70b-versatile");
   const [dragOver, setDragOver] = useState(false);
   const [initDone, setInitDone] = useState(false);
 
@@ -147,7 +145,7 @@ export default function Home() {
     // Add empty assistant message placeholder for streaming
     addMessage(activeId, { role: "assistant", content: "" });
 
-    chat.send(apiMessages, currentAttachments, model, instructionsHook.instructions, {
+    chat.send(apiMessages, currentAttachments, instructionsHook.instructions, {
       onToken(token) {
         setStreamingContent((prev) => prev + token);
       },
@@ -161,7 +159,7 @@ export default function Home() {
         updateLastMessage(activeId!, `Error: ${err}`);
       },
     });
-  }, [input, attachments, activeId, addMessage, conversations, chat, model, instructionsHook.instructions, updateLastMessage]);
+  }, [input, attachments, activeId, addMessage, conversations, chat, instructionsHook.instructions, updateLastMessage]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -226,7 +224,6 @@ export default function Home() {
         <header className="header">
           <div className="header-left">
             <h1>Aura</h1>
-            {activeConversation && <ModelSelector value={model} onChange={setModel} />}
           </div>
           <div className="header-right">
             <ExportButton conversation={activeConversation} />

@@ -21,7 +21,6 @@ export function useChat() {
   const send = useCallback(async (
     messages: { role: string; content: string }[],
     attachments: Attachment[],
-    model: string,
     customInstructions: string,
     callbacks: StreamCallbacks,
   ) => {
@@ -32,7 +31,7 @@ export function useChat() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages, attachments, model, customInstructions }),
+        body: JSON.stringify({ messages, attachments, customInstructions }),
         signal: abortRef.current.signal,
       });
 
