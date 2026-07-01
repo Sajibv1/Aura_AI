@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import Groq from "groq-sdk";
-import type { ChatCompletionMessageParam } from "groq-sdk/resources/chat/completions";
+import type { ChatCompletionMessageParam, ChatCompletionChunk } from "groq-sdk/resources/chat/completions";
 import * as cheerio from "cheerio";
 import { auth } from "@/lib/auth";
 
@@ -9,6 +9,32 @@ export const runtime = "nodejs";
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY || "",
 });
+
+const groqFallback = process.env.GROQ_FALLBACK_API_KEY
+  ? new Groq({ apiKey: process.env.GROQ_FALLBACK_API_KEY })
+  : null;
+
+async function createCompletionWithFallback(
+  params: { messages: ChatCompletionMessageParam[]; model: string; temperature?: number; max_tokens?: number; stream: boolean },
+) {
+  async function tryClient(client: Groq) {
+    return client.chat.completions.create(params);
+  }
+  try {
+    return await tryClient(groq);
+  } catch (err) {
+    if (groqFallback && isRetryableError(err)) {
+      console.warn("Primary Groq key failed, trying fallback");
+      return await tryClient(groqFallback);
+    }
+    throw err;
+  }
+}
+
+function isRetryableError(err: unknown): boolean {
+  const status = (err as { status?: number }).status;
+  return status === 429 || status === 502 || status === 503 || status === 401;
+}
 
 type Attachment = {
   type: "image" | "url" | "pdf";
@@ -86,15 +112,25 @@ function buildMessages(
 ): ChatCompletionMessageParam[] {
   const formatted: ChatCompletionMessageParam[] = [];
 
-  let systemContent = "";
+  let systemContent = `You are Aura, an intelligent AI assistant. Be helpful, concise, and friendly.`;
   if (customInstructions) {
-    systemContent += `Custom instructions: ${customInstructions}\n\n`;
+    systemContent += `\n\nCustom instructions: ${customInstructions}`;
   }
   if (scrapedContext) {
-    systemContent += `You are Aura, an intelligent AI RAG assistant. You have been provided with the following scraped webpage context. Use it to answer the user's queries if relevant.\n${scrapedContext}`;
-  } else {
-    systemContent += `You are Aura, an intelligent AI assistant. Be helpful, concise, and friendly.`;
+    systemContent += `\n\nYou have been provided with the following scraped webpage context. Use it to answer the user's queries if relevant.\n${scrapedContext}`;
   }
+
+  systemContent += `\n\nYou can write and execute code in Python, JavaScript, R, and Ruby. The code runs in a sandboxed cloud environment with no network access and a 10-second timeout.
+Available libraries:
+- Python: numpy, pandas, matplotlib, scipy, scikit-learn, statsmodels, sympy, pillow
+- JavaScript: (standard Node.js built-ins only)
+- R: (base R packages)
+
+When asked to analyze data, create visualizations, or process information:
+1. Write the code inside a fenced code block with the language (e.g., \`\`\`python) 
+2. For matplotlib plots, use plt.savefig() to save to a file, then print the file content as base64
+3. The user can click "Run" to execute the code and see the output
+4. Always explain what the code does before showing it`;
   formatted.push({ role: "system", content: systemContent.trim() });
 
   const lastMessage = messages[messages.length - 1];
@@ -162,13 +198,13 @@ export async function POST(req: Request) {
 
     const model = images.length > 0 ? "meta-llama/llama-4-scout-17b-16e-instruct" : "llama-3.3-70b-versatile";
 
-    const stream = await groq.chat.completions.create({
+    const stream = await createCompletionWithFallback({
       messages: formattedMessages,
       model,
       temperature: 0.5,
       max_tokens: 2048,
       stream: true,
-    });
+    }) as AsyncIterable<ChatCompletionChunk>;
 
     const encoder = new TextEncoder();
 
@@ -188,7 +224,7 @@ export async function POST(req: Request) {
           // Generate follow-up suggestions
           let suggestions: string[] = [];
           try {
-            const suggestCompletion = await groq.chat.completions.create({
+            const suggestCompletion = await createCompletionWithFallback({
               messages: [
                 { role: "system", content: "Generate 3 short follow-up questions the user might ask next based on this conversation. Return only a JSON array of strings, nothing else." },
                 ...formattedMessages,
@@ -197,7 +233,8 @@ export async function POST(req: Request) {
               model: "llama-3.3-70b-versatile",
               temperature: 0.7,
               max_tokens: 200,
-            });
+              stream: false,
+            }) as { choices: { message?: { content?: string } }[] };
             const raw = suggestCompletion.choices[0]?.message?.content || "[]";
             const parsed = JSON.parse(raw);
             if (Array.isArray(parsed)) suggestions = parsed.slice(0, 3);

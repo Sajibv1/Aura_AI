@@ -860,3 +860,83 @@ body {
   color: var(--text-secondary);
   white-space: nowrap;
 }
+
+/* ─── Code Block ─── */
+
+.code-block {
+  margin: 0.75rem 0;
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--code-bg);
+}
+
+.code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4rem 0.75rem;
+  background: rgba(0, 0, 0, 0.2);
+  border-bottom: 1px solid var(--surface-border);
+  font-size: 0.75rem;
+}
+
+.code-block-lang {
+  color: var(--text-secondary);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.code-run-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--surface-border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.code-run-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.code-run-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.code-block-content {
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  tab-size: 2;
+}
+
+.code-block-output {
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--surface-border);
+  background: var(--pre-bg);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  overflow-x: auto;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.code-block-output pre {
+  margin: 0;
+}
+
+.code-block-error {
+  border-top-color: var(--error);
+  color: #fca5a5;
+}

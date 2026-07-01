@@ -11,6 +11,8 @@ import { useChat, type Attachment } from "@/hooks/useChat";
 import { useTheme } from "@/hooks/useTheme";
 import { useCustomInstructions } from "@/hooks/useCustomInstructions";
 import { Sidebar } from "@/components/Sidebar";
+import { CodeBlock } from "@/components/CodeBlock";
+import type { Components } from "react-markdown";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { ExportButton } from "@/components/ExportButton";
 import { CustomInstructionsModal } from "@/components/CustomInstructionsModal";
@@ -175,6 +177,16 @@ export default function Home() {
 
   const messages = activeConversation?.messages || [];
 
+  const markdownComponents: Components = {
+    code({ className, children, ...props }) {
+      const match = /language-(\w+)/.exec(className || "");
+      if (match) {
+        return <CodeBlock language={match[1]} code={String(children).replace(/\n$/, "")} />;
+      }
+      return <code className={className} {...props}>{children}</code>;
+    },
+  };
+
   if (loading) {
     return (
       <div className="app-layout" style={{ alignItems: "center", justifyContent: "center" }}>
@@ -262,7 +274,7 @@ export default function Home() {
                 <div key={idx} className={`message ${msg.role}`}>
                   <div className="message-bubble">
                     {msg.role === "assistant" ? (
-                      <ReactMarkdown>
+                      <ReactMarkdown components={markdownComponents}>
                         {idx === messages.length - 1 && msg.content === "" ? streamingContent || "" : msg.content}
                       </ReactMarkdown>
                     ) : (
