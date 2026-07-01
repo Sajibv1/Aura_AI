@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import Groq from "groq-sdk";
 import * as cheerio from "cheerio";
-import { PDFParse } from "pdf-parse";
+
+export const runtime = "nodejs";
 
 // Initialize Groq client
 const groq = new Groq({
@@ -13,14 +14,26 @@ type Attachment = {
   data: string;
 };
 
+type ImageContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 type Message = {
   role: "user" | "assistant" | "system";
-  content: string | any[];
+  content: string | ImageContentPart[];
 };
+
+async function loadPdfParser() {
+  const { PDFParse } = await import("pdf-parse");
+  return PDFParse;
+}
 
 export async function POST(req: Request) {
   try {
-    const { messages, attachments = [] } = await req.json();
+    const { messages, attachments = [] } = await req.json() as {
+      messages?: Message[];
+      attachments?: Attachment[];
+    };
 
     if (!messages || !Array.isArray(messages)) {
       return NextResponse.json({ error: "Invalid messages format" }, { status: 400 });
@@ -54,6 +67,7 @@ export async function POST(req: Request) {
       try {
         const base64Data = pdf.data.split(",")[1];
         if (base64Data) {
+          const PDFParse = await loadPdfParser();
           const buffer = Buffer.from(base64Data, "base64");
           const parser = new PDFParse({ data: buffer });
           const pdfData = await parser.getText();
@@ -67,7 +81,7 @@ export async function POST(req: Request) {
     }
     
     // Prepare Groq messages
-    let formattedMessages: Message[] = [];
+    const formattedMessages: Message[] = [];
     
     // Add system message if there is scraped context
     if (scrapedContext) {
@@ -95,8 +109,11 @@ export async function POST(req: Request) {
 
     // Handle last message which may include images
     if (images.length > 0) {
-      const contentArray: any[] = [
-        { type: "text", text: lastMessage.content || "Please analyze this image." }
+      const lastMessageText = typeof lastMessage.content === "string"
+        ? lastMessage.content
+        : "Please analyze this image.";
+      const contentArray: ImageContentPart[] = [
+        { type: "text", text: lastMessageText || "Please analyze this image." }
       ];
       
       for (const img of images) {
@@ -134,8 +151,9 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ reply });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("API Error:", error);
-    return NextResponse.json({ error: error.message || "Something went wrong" }, { status: 500 });
+    const message = error instanceof Error ? error.message : "Something went wrong";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
