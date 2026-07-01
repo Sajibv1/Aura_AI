@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import Groq from "groq-sdk";
 import type { ChatCompletionMessageParam } from "groq-sdk/resources/chat/completions";
 import * as cheerio from "cheerio";
+import { auth } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -142,6 +143,11 @@ function buildMessages(
 }
 
 export async function POST(req: Request) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const body = await req.json() as {
       messages?: Message[];
