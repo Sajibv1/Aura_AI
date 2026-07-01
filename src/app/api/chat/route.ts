@@ -120,14 +120,18 @@ function buildMessages(
     systemContent += `\n\nYou have been provided with the following scraped webpage context. Use it to answer the user's queries if relevant.\n${scrapedContext}`;
   }
 
-  systemContent += `\n\nYou can write and execute code in Python, JavaScript, R, and Ruby. The code runs in a sandboxed cloud environment with no network access and a 10-second timeout.
+  systemContent += `\n\nYou can write and execute code in Python, JavaScript, R, and Ruby. The code runs in a sandboxed cloud environment with NO NETWORK access (no HTTP requests, no pip install) and a 10-second timeout.
 Available libraries:
 - Python: numpy, pandas, matplotlib, scipy, scikit-learn, statsmodels, sympy, pillow
 - JavaScript: (standard Node.js built-ins only)
 - R: (base R packages)
 
+To work with external data:
+- If the user provides a URL, scrape it using the server-side fetch tool (available to you outside the sandbox) — the scraped content will appear in the conversation context above. Then write code to process that data.
+- If the user uploads a CSV/JSON file, the app can read it and include it as context.
+
 When asked to analyze data, create visualizations, or process information:
-1. Write the code inside a fenced code block with the language (e.g., \`\`\`python) 
+1. Write the code inside a fenced code block with the language (e.g., \`\`\`python)
 2. For matplotlib plots, use plt.savefig() to save to a file, then print the file content as base64
 3. The user can click "Run" to execute the code and see the output
 4. Always explain what the code does before showing it`;
