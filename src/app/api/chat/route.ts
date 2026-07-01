@@ -120,23 +120,17 @@ function buildMessages(
     systemContent += `\n\nYou have been provided with the following scraped webpage context. Use it to answer the user's queries if relevant.\n${scrapedContext}`;
   }
 
-  systemContent += `\n\nYou can write and execute Python and JavaScript code. The code runs in the user's browser via WebAssembly (Pyodide) — it is fully sandboxed with no network access, no file system, and no pip install. A 10-second timeout applies.
-Available Python libraries (pre-loaded): numpy, pandas, matplotlib, scipy
-JavaScript runs with built-in language features only (no Node.js APIs).
-
-Important limitations:
-- NO network requests (no requests, urllib, fetch, etc.)
-- NO file I/O (except matplotlib figures which render automatically)
-- NO pip/conda install
-- Random number generation works (numpy.random, random module)
+  systemContent += `\n\nYou can write and execute JavaScript code. The code runs in a sandboxed iframe in the user's browser with a 10-second timeout.
+Available APIs: standard JavaScript (Math, JSON, Date, RegExp, String, Number, Array, Object, Map, Set, Promise, setTimeout, crypto, btoa/atob, TextEncoder, etc.).
+No DOM access, no fetch/XMLHttpRequest, no Node.js APIs.
 
 To work with external data:
 - If the user provides a URL, scrape it using the server-side fetch tool — the scraped content will appear in the conversation context above. Then write code to process that data.
 - If the user uploads a file, the app reads it and includes the content as context.
 
 When asked to analyze data, create visualizations, or process information:
-1. Write the code inside a fenced code block with the language (e.g., \`\`\`python)
-2. matplotlib figures render automatically — just call plt.plot() etc. and the plot will appear below the output
+1. Write the code inside a fenced code block with language set to "javascript"
+2. Use console.log() to display results which the user can see
 3. The user can click "Run" to execute the code and see the output
 4. Always explain what the code does before showing it`;
   formatted.push({ role: "system", content: systemContent.trim() });
