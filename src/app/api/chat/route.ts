@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import Groq from "groq-sdk";
+import type { ChatCompletionMessageParam } from "groq-sdk/resources/chat/completions";
 import * as cheerio from "cheerio";
 
 export const runtime = "nodejs";
@@ -91,7 +92,7 @@ export async function POST(req: Request) {
     }
     
     // Prepare Groq messages
-    const formattedMessages: Message[] = [];
+    const formattedMessages: ChatCompletionMessageParam[] = [];
     
     // Add system message if there is scraped context
     if (scrapedContext) {
@@ -111,10 +112,13 @@ export async function POST(req: Request) {
 
     // Add previous messages (text only)
     for (const msg of previousMessages) {
-      formattedMessages.push({
-        role: msg.role,
-        content: msg.content
-      });
+      if (msg.role === "system") {
+        formattedMessages.push({ role: "system", content: msg.content as string });
+      } else if (msg.role === "user") {
+        formattedMessages.push({ role: "user", content: msg.content as string });
+      } else {
+        formattedMessages.push({ role: "assistant", content: msg.content as string });
+      }
     }
 
     // Handle last message which may include images
@@ -136,14 +140,17 @@ export async function POST(req: Request) {
       }
 
       formattedMessages.push({
-        role: lastMessage.role,
+        role: "user",
         content: contentArray
       });
     } else {
-      formattedMessages.push({
-        role: lastMessage.role,
-        content: lastMessage.content
-      });
+      if (lastMessage.role === "system") {
+        formattedMessages.push({ role: "system", content: lastMessage.content as string });
+      } else if (lastMessage.role === "user") {
+        formattedMessages.push({ role: "user", content: lastMessage.content as string });
+      } else {
+        formattedMessages.push({ role: "assistant", content: lastMessage.content as string });
+      }
     }
 
     // meta-llama/llama-4-scout-17b-16e-instruct for images
