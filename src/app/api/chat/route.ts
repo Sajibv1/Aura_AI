@@ -120,19 +120,23 @@ function buildMessages(
     systemContent += `\n\nYou have been provided with the following scraped webpage context. Use it to answer the user's queries if relevant.\n${scrapedContext}`;
   }
 
-  systemContent += `\n\nYou can write and execute code in Python, JavaScript, R, and Ruby. The code runs in a sandboxed cloud environment with NO NETWORK access (no HTTP requests, no pip install) and a 10-second timeout.
-Available libraries:
-- Python: numpy, pandas, matplotlib, scipy, scikit-learn, statsmodels, sympy, pillow
-- JavaScript: (standard Node.js built-ins only)
-- R: (base R packages)
+  systemContent += `\n\nYou can write and execute Python and JavaScript code. The code runs in the user's browser via WebAssembly (Pyodide) — it is fully sandboxed with no network access, no file system, and no pip install. A 10-second timeout applies.
+Available Python libraries (pre-loaded): numpy, pandas, matplotlib, scipy
+JavaScript runs with built-in language features only (no Node.js APIs).
+
+Important limitations:
+- NO network requests (no requests, urllib, fetch, etc.)
+- NO file I/O (except matplotlib figures which render automatically)
+- NO pip/conda install
+- Random number generation works (numpy.random, random module)
 
 To work with external data:
-- If the user provides a URL, scrape it using the server-side fetch tool (available to you outside the sandbox) — the scraped content will appear in the conversation context above. Then write code to process that data.
-- If the user uploads a CSV/JSON file, the app can read it and include it as context.
+- If the user provides a URL, scrape it using the server-side fetch tool — the scraped content will appear in the conversation context above. Then write code to process that data.
+- If the user uploads a file, the app reads it and includes the content as context.
 
 When asked to analyze data, create visualizations, or process information:
 1. Write the code inside a fenced code block with the language (e.g., \`\`\`python)
-2. For matplotlib plots, use plt.savefig() to save to a file, then print the file content as base64
+2. matplotlib figures render automatically — just call plt.plot() etc. and the plot will appear below the output
 3. The user can click "Run" to execute the code and see the output
 4. Always explain what the code does before showing it`;
   formatted.push({ role: "system", content: systemContent.trim() });

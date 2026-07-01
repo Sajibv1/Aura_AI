@@ -940,3 +940,9 @@ body {
   border-top-color: var(--error);
   color: #fca5a5;
 }
+
+.code-block-plot {
+  max-width: 100%;
+  border-radius: 6px;
+  margin-top: 0.5rem;
+}
