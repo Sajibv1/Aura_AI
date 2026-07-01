@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, ChangeEvent, FormEvent } from "react";
 import ReactMarkdown from "react-markdown";
-import { Send, Image as ImageIcon, Link as LinkIcon, X, Loader2 } from "lucide-react";
+import { Send, Image as ImageIcon, Link as LinkIcon, X, Loader2, FileText } from "lucide-react";
 
 type Message = {
   role: "user" | "assistant";
@@ -10,8 +10,9 @@ type Message = {
 };
 
 type Attachment = {
-  type: "image" | "url";
-  data: string; // base64 for image, url string for url
+  type: "image" | "url" | "pdf";
+  data: string; // base64 for image/pdf, url string for url
+  name?: string; // filename for display
 };
 
 export default function Home() {
@@ -35,13 +36,18 @@ export default function Home() {
     scrollToBottom();
   }, [messages, isLoading]);
 
-  const handleImageUpload = (e: ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      const isPdf = file.type === "application/pdf";
       const reader = new FileReader();
       reader.onloadend = () => {
         const base64String = reader.result as string;
-        setAttachments(prev => [...prev, { type: "image", data: base64String }]);
+        setAttachments(prev => [...prev, { 
+          type: isPdf ? "pdf" : "image", 
+          data: base64String,
+          name: file.name
+        }]);
       };
       reader.readAsDataURL(file);
     }
@@ -151,11 +157,13 @@ export default function Home() {
                   <div key={idx} className="active-attachment">
                     {att.type === 'image' ? (
                       <img src={att.data} alt="Upload" style={{ width: 24, height: 24, borderRadius: 4, objectFit: 'cover' }} />
+                    ) : att.type === 'pdf' ? (
+                      <FileText size={14} />
                     ) : (
                       <LinkIcon size={14} />
                     )}
                     <span style={{ maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {att.type === 'image' ? 'Image' : att.data}
+                      {att.name || (att.type === 'image' ? 'Image' : att.data)}
                     </span>
                     <button onClick={() => removeAttachment(idx)}>
                       <X size={14} />
@@ -195,16 +203,16 @@ export default function Home() {
                 type="button" 
                 className="icon-btn" 
                 onClick={() => fileInputRef.current?.click()}
-                title="Upload Image"
+                title="Upload Image or PDF"
               >
                 <ImageIcon size={20} />
               </button>
               <input 
                 type="file" 
-                accept="image/*" 
+                accept="image/*,application/pdf" 
                 ref={fileInputRef} 
                 style={{ display: "none" }} 
-                onChange={handleImageUpload}
+                onChange={handleFileUpload}
               />
 
               <textarea 

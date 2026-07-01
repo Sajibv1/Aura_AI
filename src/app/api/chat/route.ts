@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import Groq from "groq-sdk";
 import * as cheerio from "cheerio";
+import { PDFParse } from "pdf-parse";
 
 // Initialize Groq client
 const groq = new Groq({
@@ -8,7 +9,7 @@ const groq = new Groq({
 });
 
 type Attachment = {
-  type: "image" | "url";
+  type: "image" | "url" | "pdf";
   data: string;
 };
 
@@ -47,6 +48,23 @@ export async function POST(req: Request) {
     }
 
     const images = attachments.filter((att: Attachment) => att.type === "image");
+    const pdfs = attachments.filter((att: Attachment) => att.type === "pdf");
+    
+    for (const pdf of pdfs) {
+      try {
+        const base64Data = pdf.data.split(",")[1];
+        if (base64Data) {
+          const buffer = Buffer.from(base64Data, "base64");
+          const parser = new PDFParse({ data: buffer });
+          const pdfData = await parser.getText();
+          await parser.destroy();
+          scrapedContext += `\n\n--- Content from PDF ---\n${pdfData.text.substring(0, 10000)}\n--- End Content ---\n`;
+        }
+      } catch (err) {
+        console.error("Error parsing PDF:", err);
+        scrapedContext += `\n\n--- Error reading PDF ---\n`;
+      }
+    }
     
     // Prepare Groq messages
     let formattedMessages: Message[] = [];
