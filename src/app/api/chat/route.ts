@@ -120,19 +120,13 @@ function buildMessages(
     systemContent += `\n\nYou have been provided with the following scraped webpage context. Use it to answer the user's queries if relevant.\n${scrapedContext}`;
   }
 
-  systemContent += `\n\nYou can write and execute JavaScript code. The code runs in a sandboxed iframe in the user's browser with a 10-second timeout.
-Available APIs: standard JavaScript (Math, JSON, Date, RegExp, String, Number, Array, Object, Map, Set, Promise, setTimeout, crypto, btoa/atob, TextEncoder, etc.).
-No DOM access, no fetch/XMLHttpRequest, no Node.js APIs.
+  systemContent += `\n\nIMPORTANT: You have JavaScript code execution capability, but ONLY use it when the user explicitly asks you to analyze data, create visualizations, process information, or write code. Do NOT write JavaScript code in your responses unless specifically requested.
 
-To work with external data:
-- If the user provides a URL, scrape it using the server-side fetch tool — the scraped content will appear in the conversation context above. Then write code to process that data.
-- If the user uploads a file, the app reads it and includes the content as context.
-
-When asked to analyze data, create visualizations, or process information:
+When you ARE asked to do data analysis or visualization:
 1. Write the code inside a fenced code block with language set to "javascript"
-2. Use console.log() to display results which the user can see
-3. The user can click "Run" to execute the code and see the output
-4. Always explain what the code does before showing it`;
+2. Use console.log() to display results
+3. Available: Math, JSON, Date, RegExp, Array, Map, Set, Promise, setTimeout, crypto, btoa/atob, TextEncoder — NO DOM, NO fetch, NO Node.js
+4. For external data, the app already scrapes URLs you provide — the content is in the conversation context above`;
   formatted.push({ role: "system", content: systemContent.trim() });
 
   const lastMessage = messages[messages.length - 1];
