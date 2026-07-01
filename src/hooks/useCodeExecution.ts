@@ -1,77 +1,89 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback } from "react";
 
 type ExecutionResult = {
   stdout: string;
   stderr: string;
-  images: string[]; // base64 PNGs
+  images: string[];
 };
 
-type PyodideModule = {
+type PyodideAPI = {
   runPython: (code: string) => unknown;
-  globals: Map<string, unknown>;
   loadPackage: (names: string[]) => Promise<void>;
-  FS: { writeFile: (path: string, data: Uint8Array) => void };
 };
 
-const PYODIDE_CDN = "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js";
+const PYODIDE_VERSION = "v0.26.4";
+const PYODIDE_INDEX = `https://cdn.jsdelivr.net/pyodide/${PYODIDE_VERSION}/full/`;
+const SCRIPT_URL = `${PYODIDE_INDEX}pyodide.js`;
+const DEFAULT_TIMEOUT = 60_000;
 
-let pyodideInstance: PyodideModule | null = null;
-let pyodideLoading: Promise<PyodideModule> | null = null;
+function timeout<T>(promise: Promise<T>, ms: number, msg: string): Promise<T> {
+  let id: ReturnType<typeof setTimeout>;
+  const timer = new Promise<never>((_, reject) => {
+    id = setTimeout(() => reject(new Error(msg)), ms);
+  });
+  return Promise.race([promise, timer]).finally(() => clearTimeout(id!));
+}
 
-async function getPyodide(): Promise<PyodideModule> {
-  if (pyodideInstance) return pyodideInstance;
-  if (pyodideLoading) return pyodideLoading;
+function loadScript(url: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${url}"]`);
+    if (existing) { resolve(); return; }
+    const s = document.createElement("script");
+    s.src = url;
+    s.crossOrigin = "anonymous";
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error(`Failed to load ${url}`));
+    document.head.appendChild(s);
+  });
+}
 
-  pyodideLoading = (async () => {
-    const script = document.createElement("script");
-    script.src = PYODIDE_CDN;
-    script.async = true;
-    document.head.appendChild(script);
-    await new Promise((resolve, reject) => {
-      script.onload = resolve;
-      script.onerror = () => reject(new Error("Failed to load Pyodide"));
-    });
+let pyPromise: Promise<PyodideAPI> | null = null;
+let pyError: Error | null = null;
 
-    const pyodide = await (window as unknown as { loadPyodide: (config: { indexURL: string }) => Promise<PyodideModule> }).loadPyodide({
-      indexURL: "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/",
-    });
+async function getPyodide(onProgress: (msg: string) => void): Promise<PyodideAPI> {
+  if (pyError) {
+    pyError = null;
+    pyPromise = null;
+  }
+  if (pyPromise) return pyPromise;
 
-    await pyodide.loadPackage(["numpy", "pandas", "matplotlib", "scipy"]);
-    pyodideInstance = pyodide;
+  pyPromise = (async () => {
+    onProgress("Downloading Pyodide runtime…");
+    await timeout(loadScript(SCRIPT_URL), DEFAULT_TIMEOUT / 3, "Timed out downloading Pyodide runtime");
+
+    const loadPyodide = (window as unknown as { loadPyodide?: (cfg: { indexURL: string }) => Promise<PyodideAPI> }).loadPyodide;
+    if (!loadPyodide) {
+      // The global might not be set yet — wait a tick
+      await new Promise((r) => setTimeout(r, 500));
+      const loadPyodide2 = (window as unknown as { loadPyodide?: (cfg: { indexURL: string }) => Promise<PyodideAPI> }).loadPyodide;
+      if (!loadPyodide2) throw new Error("Pyodide failed to register — check browser console");
+    }
+
+    onProgress("Starting Python interpreter…");
+    const pyodide = await timeout(
+      (loadPyodide || (window as unknown as { loadPyodide: (cfg: { indexURL: string }) => Promise<PyodideAPI> }).loadPyodide)({ indexURL: PYODIDE_INDEX }),
+      DEFAULT_TIMEOUT / 3,
+      "Timed out starting Python interpreter",
+    );
+
+    onProgress("Loading packages (numpy, pandas, matplotlib, scipy)…");
+    await timeout(
+      pyodide.loadPackage(["numpy", "pandas", "matplotlib", "scipy"]),
+      DEFAULT_TIMEOUT / 3,
+      "Timed out loading packages",
+    );
+
     return pyodide;
   })();
 
-  return pyodideLoading;
-}
+  pyPromise.catch((err) => {
+    pyError = err;
+    pyPromise = null;
+  });
 
-function capturePythonStdout(pyodide: PyodideModule): () => string {
-  const chunks: string[] = [];
-  const code = `
-import sys
-from io import StringIO
-
-_buf = StringIO()
-_old_stdout = sys.stdout
-sys.stdout = _buf
-_display_hook = sys.displayhook
-sys.displayhook = lambda x: None
-`;
-  pyodide.runPython(code);
-
-  return () => {
-    const code2 = `
-sys.stdout = _old_stdout
-sys.displayhook = _display_hook
-out = _buf.getvalue()
-_buf = StringIO()
-sys.stdout = _buf
-sys.displayhook = lambda x: None
-out
-`;
-    return String(pyodide.runPython(code2));
-  };
+  return pyPromise;
 }
 
 export function usePythonExecution() {
@@ -80,20 +92,29 @@ export function usePythonExecution() {
 
   const execute = useCallback(async (code: string): Promise<ExecutionResult> => {
     setLoading(true);
-    setProgress("Loading Pyodide…");
+    setProgress("Preparing…");
+
     try {
-      const pyodide = await getPyodide();
+      const pyodide = await getPyodide(setProgress);
       setProgress("Running…");
 
       // Redirect stdout
-      const flushStdout = capturePythonStdout(pyodide);
+      pyodide.runPython(`
+import sys
+from io import StringIO
+_buf = StringIO()
+_old_stdout = sys.stdout
+sys.stdout = _buf
+_display_hook = sys.displayhook
+sys.displayhook = lambda x: None
+`);
 
-      // Set up matplotlib to save as base64
-      const setupCode = `
+      // Setup matplotlib auto-capture
+      pyodide.runPython(`
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import base64, io, sys, json
+import base64, io
 
 def _aura_show():
     buf = io.BytesIO()
@@ -102,8 +123,7 @@ def _aura_show():
     img_b64 = base64.b64encode(buf.read()).decode()
     plt.close()
     return img_b64
-`;
-      pyodide.runPython(setupCode);
+`);
 
       let stdout = "";
       let stderr = "";
@@ -111,23 +131,36 @@ def _aura_show():
 
       try {
         pyodide.runPython(code);
-        stdout = flushStdout();
 
-        // Check if there's a current figure
-        const hasFig = pyodide.runPython(`
-import matplotlib.pyplot as plt
-str(int(plt.get_fignums() != []))
-`) as string;
-        if (hasFig === "1") {
-          const imgB64 = pyodide.runPython("_aura_show()") as string;
-          images.push(imgB64);
+        // Flush stdout
+        stdout = String(pyodide.runPython(`
+sys.stdout = _old_stdout
+sys.displayhook = _display_hook
+out = _buf.getvalue()
+_buf = StringIO()
+sys.stdout = _buf
+sys.displayhook = lambda x: None
+out
+`));
+
+        // Capture matplotlib figure
+        const hasFig = Number(pyodide.runPython("import matplotlib.pyplot as plt; plt.get_fignums() != []"));
+        if (hasFig) {
+          const b64 = String(pyodide.runPython("_aura_show()"));
+          images.push(b64);
         }
       } catch (err) {
         stderr = String(err);
-        stdout = flushStdout();
+        stdout = String(pyodide.runPython(`
+sys.stdout = _old_stdout
+out = _buf.getvalue()
+out
+`));
       }
 
       return { stdout, stderr, images };
+    } catch (err) {
+      return { stdout: "", stderr: String(err), images: [] };
     } finally {
       setLoading(false);
       setProgress("");
