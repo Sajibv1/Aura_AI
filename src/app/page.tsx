@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback, ChangeEvent, FormEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import {
-  Send, Image as ImageIcon, Link as LinkIcon, X, Loader2, FileText, LogOut,
+  Send, Image as ImageIcon, Link as LinkIcon, X, Loader2, FileText, LogOut, Sparkles,
 } from "lucide-react";
 import { useSession, signIn, signOut } from "next-auth/react";
 import { useConversations } from "@/hooks/useConversations";
@@ -261,6 +261,7 @@ export default function Home() {
 
           {messages.length === 0 && !chat.isLoading ? (
             <div className="welcome">
+              <div className="welcome-logo"><Sparkles size={32} /></div>
               <h2>Aura</h2>
               <p>Your Intelligent Multi-modal RAG Assistant</p>
               <div className="welcome-hints">
@@ -273,11 +274,25 @@ export default function Home() {
             <div className="messages-area">
               {messages.map((msg, idx) => (
                 <div key={idx} className={`message ${msg.role}`}>
+                  <div className="message-avatar">
+                    {msg.role === "assistant" ? (
+                      <Sparkles size={16} />
+                    ) : session?.user?.image ? (
+                      <img src={session.user.image} alt="" className="user-avatar" style={{ width: 34, height: 34, margin: 0, border: "none" }} />
+                    ) : (
+                      session?.user?.name?.[0] || "U"
+                    )}
+                  </div>
                   <div className="message-bubble">
                     {msg.role === "assistant" ? (
-                      <ReactMarkdown components={markdownComponents}>
-                        {idx === messages.length - 1 && msg.content === "" ? streamingContent || "" : msg.content}
-                      </ReactMarkdown>
+                      <>
+                        <ReactMarkdown components={markdownComponents}>
+                          {idx === messages.length - 1 && msg.content === "" ? streamingContent || "" : msg.content}
+                        </ReactMarkdown>
+                        {idx === messages.length - 1 && msg.content === "" && chat.isLoading && (
+                          <span className="stream-cursor" />
+                        )}
+                      </>
                     ) : (
                       <p>{msg.content}</p>
                     )}
