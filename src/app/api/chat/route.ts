@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import Groq from "groq-sdk";
 import type { ChatCompletionMessageParam, ChatCompletionChunk } from "groq-sdk/resources/chat/completions";
 import * as cheerio from "cheerio";
+import FirecrawlApp from "@mendable/firecrawl-js";
 import { auth } from "@/lib/auth";
 
 export const runtime = "nodejs";
@@ -13,6 +14,13 @@ const groq = new Groq({
 const groqFallback = process.env.GROQ_FALLBACK_API_KEY
   ? new Groq({ apiKey: process.env.GROQ_FALLBACK_API_KEY })
   : null;
+
+const firecrawl = process.env.FIRECRAWL_API_KEY
+  ? new FirecrawlApp({ apiKey: process.env.FIRECRAWL_API_KEY })
+  : null;
+
+const HTTP_TIMEOUT = 10_000;
+const FIRECRAWL_TIMEOUT = 30_000;
 
 async function createCompletionWithFallback(
   params: { messages: ChatCompletionMessageParam[]; model: string; temperature?: number; max_tokens?: number; stream: boolean },
@@ -63,25 +71,111 @@ async function loadPdfParser() {
   return PDFParse;
 }
 
+// ─── Web scraping ───
+
+function extractWithCheerio(html: string): string {
+  const $ = cheerio.load(html);
+  $("script, style, nav, footer, header, aside").remove();
+  return $("body").text().replace(/\s+/g, " ").trim();
+}
+
+function needsFallback(html: string, extractedText: string): boolean {
+  return (
+    html.length < 1500 ||
+    extractedText.length < 300 ||
+    /enable javascript/i.test(html) ||
+    /checking your browser/i.test(html) ||
+    /captcha/i.test(html) ||
+    /attention.*required/i.test(html) ||
+    /cloudflare/i.test(html)
+  );
+}
+
+async function fetchPage(url: string): Promise<{ html: string; from: "fetch" } | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT);
+
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      redirect: "follow",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+
+    if (!res.ok) return null;
+
+    const html = await res.text();
+    return { html, from: "fetch" };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function extractWithFirecrawl(url: string): Promise<string | null> {
+  if (!firecrawl) return null;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FIRECRAWL_TIMEOUT);
+
+  try {
+    const result = await firecrawl.scrapeUrl(url, { formats: ["markdown"] }) as { markdown?: string };
+    return result.markdown?.trim() || null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchPageContent(url: string): Promise<string> {
+  // Fast path: HTTP fetch + Cheerio
+  const fetched = await fetchPage(url);
+  if (fetched) {
+    const text = extractWithCheerio(fetched.html);
+    if (!needsFallback(fetched.html, text)) {
+      return text.substring(0, 10_000);
+    }
+  }
+
+  // Slow path: Firecrawl fallback
+  const md = await extractWithFirecrawl(url);
+  if (md) {
+    return md.substring(0, 10_000);
+  }
+
+  // Final fallback: return whatever text we got from fast path
+  if (fetched) {
+    const text = extractWithCheerio(fetched.html);
+    if (text) return text.substring(0, 10_000);
+  }
+
+  return "";
+}
+
 async function scrapeUrls(urls: string[]): Promise<string> {
+  const results = await Promise.allSettled(urls.map(fetchPageContent));
+
   let context = "";
-  for (const url of urls) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) {
-        const html = await res.text();
-        const $ = cheerio.load(html);
-        $("script, style").remove();
-        const text = $("body").text().replace(/\s+/g, " ").trim();
-        context += `\n\n--- Content from ${url} ---\n${text.substring(0, 5000)}\n--- End Content ---\n`;
-      }
-    } catch (err) {
-      console.error("Error scraping URL:", url, err);
-      context += `\n\n--- Error scraping ${url} ---\n`;
+  for (let i = 0; i < urls.length; i++) {
+    const result = results[i];
+    const url = urls[i];
+    if (result.status === "fulfilled" && result.value) {
+      context += `\n\n--- Content from ${url} ---\n${result.value}\n--- End Content ---\n`;
+    } else {
+      context += `\n\n--- Could not retrieve content from ${url} ---\n`;
     }
   }
   return context;
 }
+
+// ─── PDF parsing ───
 
 async function parsePdfs(pdfs: Attachment[]): Promise<string> {
   let context = "";
@@ -103,6 +197,8 @@ async function parsePdfs(pdfs: Attachment[]): Promise<string> {
   }
   return context;
 }
+
+// ─── Message building ───
 
 function buildMessages(
   messages: Message[],
@@ -165,6 +261,8 @@ When you ARE asked to do data analysis or visualization:
 
   return formatted;
 }
+
+// ─── Route ───
 
 export async function POST(req: Request) {
   const session = await auth();
