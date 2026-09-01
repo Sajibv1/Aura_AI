@@ -265,8 +265,9 @@ When you ARE asked to do data analysis or visualization:
 // ─── Route ───
 
 export async function POST(req: Request) {
+  const isAuthOptional = !process.env.AUTH_GOOGLE_ID;
   const session = await auth();
-  if (!session?.user?.id) {
+  if (!isAuthOptional && !session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
