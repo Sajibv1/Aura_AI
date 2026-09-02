@@ -3,10 +3,10 @@
 import { useState, useRef, useEffect, useCallback, ChangeEvent, FormEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import {
-  Send, Image as ImageIcon, Link as LinkIcon, X, Loader2, FileText, Sparkles,
+  Send, Image as ImageIcon, Link as LinkIcon, X, Loader2, FileText, Sparkles, Check,
 } from "lucide-react";
 import { useConversations } from "@/hooks/useConversations";
-import { useChat, type Attachment } from "@/hooks/useChat";
+import { useChat, type Attachment, type StatusEvent } from "@/hooks/useChat";
 import { useTheme } from "@/hooks/useTheme";
 import { useCustomInstructions } from "@/hooks/useCustomInstructions";
 import { Sidebar } from "@/components/Sidebar";
@@ -15,6 +15,17 @@ import type { Components } from "react-markdown";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { ExportButton } from "@/components/ExportButton";
 import { CustomInstructionsModal } from "@/components/CustomInstructionsModal";
+
+type ActivityItem = {
+  key: string;
+  text: string;
+  state: "active" | "done" | "failed";
+};
+
+function shortUrl(url: string): string {
+  const stripped = url.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  return stripped.length > 40 ? `${stripped.slice(0, 40)}…` : stripped;
+}
 
 export function ChatClient() {
   const themeHook = useTheme();
@@ -36,6 +47,7 @@ export function ChatClient() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [initDone, setInitDone] = useState(false);
+  const [activity, setActivity] = useState<ActivityItem[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -118,6 +130,27 @@ export function ChatClient() {
     setSuggestions([]);
   }, [switchConversation]);
 
+  const handleStatus = useCallback((s: StatusEvent) => {
+    setActivity((prev) => {
+      switch (s.status) {
+        case "visiting":
+          return [...prev, { key: s.url, text: `Visiting ${shortUrl(s.url)}`, state: "active" as const }];
+        case "visited":
+          return prev.map((a) =>
+            a.key === s.url
+              ? { ...a, state: s.ok ? ("done" as const) : ("failed" as const), text: s.ok ? `Read ${shortUrl(s.url)}` : `Couldn't access ${shortUrl(s.url)}` }
+              : a,
+          );
+        case "reading_pdf":
+          return [...prev, { key: `pdf:${s.name ?? ""}`, text: `Reading ${s.name || "PDF"}`, state: "active" as const }];
+        case "read_pdf":
+          return prev.map((a) => (a.key === `pdf:${s.name ?? ""}` ? { ...a, state: "done" as const } : a));
+        case "thinking":
+          return [...prev, { key: "thinking", text: "Thinking…", state: "active" as const }];
+      }
+    });
+  }, []);
+
   const handleSend = useCallback(async (e?: FormEvent) => {
     if (e) e.preventDefault();
     if (!input.trim() && attachments.length === 0) return;
@@ -140,25 +173,31 @@ export function ChatClient() {
     const apiMessages = conv ? [...conv.messages, { role: "user" as const, content: userContent || "(attachment sent)" }] : [];
 
     setStreamingContent("");
+    setActivity([]);
 
     // Add empty assistant message placeholder for streaming
     addMessage(activeId, { role: "assistant", content: "" });
 
     chat.send(apiMessages, currentAttachments, instructionsHook.instructions, {
+      onStatus: handleStatus,
       onToken(token) {
         setStreamingContent((prev) => prev + token);
+        // The answer is streaming now — the activity log has served its purpose
+        setActivity((prev) => (prev.length ? [] : prev));
       },
       onDone(full, newSuggestions) {
         setStreamingContent("");
+        setActivity([]);
         updateLastMessage(activeId!, full);
         setSuggestions(newSuggestions);
       },
       onError(err) {
         setStreamingContent("");
+        setActivity([]);
         updateLastMessage(activeId!, `Error: ${err}`);
       },
     });
-  }, [input, attachments, activeId, addMessage, conversations, chat, instructionsHook.instructions, updateLastMessage]);
+  }, [input, attachments, activeId, addMessage, conversations, chat, instructionsHook.instructions, updateLastMessage, handleStatus]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -264,6 +303,24 @@ export function ChatClient() {
                 </div>
               ))}
               <div ref={messagesEndRef} />
+              {chat.isLoading && activity.length > 0 && (
+                <div className="activity-feed">
+                  {activity.map((a) => (
+                    <div key={a.key} className={`activity-item ${a.state}`}>
+                      <span className="activity-icon">
+                        {a.state === "active" ? (
+                          <Loader2 size={12} className="animate-spin" />
+                        ) : a.state === "done" ? (
+                          <Check size={12} />
+                        ) : (
+                          <X size={12} />
+                        )}
+                      </span>
+                      <span className="activity-text">{a.text}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 

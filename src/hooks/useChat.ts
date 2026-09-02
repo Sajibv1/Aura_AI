@@ -8,10 +8,18 @@ export type Attachment = {
   name?: string;
 };
 
+export type StatusEvent =
+  | { status: "visiting"; url: string }
+  | { status: "visited"; url: string; ok: boolean }
+  | { status: "reading_pdf"; name?: string }
+  | { status: "read_pdf"; name?: string }
+  | { status: "thinking" };
+
 type StreamCallbacks = {
   onToken: (token: string) => void;
   onDone: (full: string, suggestions: string[]) => void;
   onError: (err: string) => void;
+  onStatus?: (status: StatusEvent) => void;
 };
 
 export function useChat() {
@@ -65,6 +73,9 @@ export function useChat() {
           if (!line.startsWith("data: ")) continue;
           try {
             const data = JSON.parse(line.slice(6));
+            if (data.status && callbacks.onStatus) {
+              callbacks.onStatus(data as StatusEvent);
+            }
             if (data.token) {
               fullReply += data.token;
               callbacks.onToken(data.token);

@@ -571,6 +571,61 @@ body {
   }
 }
 
+/* ─── Activity Feed (URL/PDF progress) ─── */
+
+.activity-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0.75rem;
+  margin: 0.25rem 0.75rem;
+  border-left: 2px solid var(--accent);
+  font-size: 0.8rem;
+  color: var(--text-secondary, #888);
+}
+
+.activity-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  animation: activityFadeIn 0.25s ease-out;
+}
+
+.activity-item .activity-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.activity-item.done .activity-icon {
+  color: #22c55e;
+}
+
+.activity-item.failed {
+  color: #ef4444;
+}
+
+.activity-item.failed .activity-icon {
+  color: #ef4444;
+}
+
+.activity-item .activity-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes activityFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* ─── Stream Cursor ─── */
 
 .stream-cursor {

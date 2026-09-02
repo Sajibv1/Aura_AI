@@ -122,7 +122,16 @@ function isRetryableError(err: unknown): boolean {
 type Attachment = {
   type: "image" | "url" | "pdf";
   data: string;
+  name?: string;
 };
+
+// Progress events streamed to the client before/while the model responds.
+export type StatusEvent =
+  | { status: "visiting"; url: string }
+  | { status: "visited"; url: string; ok: boolean }
+  | { status: "reading_pdf"; name?: string }
+  | { status: "read_pdf"; name?: string }
+  | { status: "thinking" };
 
 type ImageContentPart =
   | { type: "text"; text: string }
@@ -244,8 +253,15 @@ function extractInlineUrls(messages: Message[]): string[] {
   );
 }
 
-async function scrapeUrls(urls: string[]): Promise<string> {
-  const results = await Promise.allSettled(urls.map(fetchPageContent));
+async function scrapeUrls(urls: string[], onStatus: (event: StatusEvent) => void): Promise<string> {
+  const results = await Promise.allSettled(
+    urls.map(async (url) => {
+      onStatus({ status: "visiting", url });
+      const content = await fetchPageContent(url);
+      onStatus({ status: "visited", url, ok: !!content });
+      return content;
+    }),
+  );
 
   let context = "";
   for (let i = 0; i < urls.length; i++) {
@@ -262,17 +278,19 @@ async function scrapeUrls(urls: string[]): Promise<string> {
 
 // ─── PDF parsing ───
 
-async function parsePdfs(pdfs: Attachment[]): Promise<string> {
+async function parsePdfs(pdfs: Attachment[], onStatus: (event: StatusEvent) => void): Promise<string> {
   let context = "";
   for (const pdf of pdfs) {
     try {
       const base64Data = pdf.data.split(",")[1];
       if (base64Data) {
+        onStatus({ status: "reading_pdf", name: pdf.name });
         const PDFParse = await loadPdfParser();
         const buffer = Buffer.from(base64Data, "base64");
         const parser = new PDFParse({ data: buffer });
         const pdfData = await parser.getText();
         await parser.destroy();
+        onStatus({ status: "read_pdf", name: pdf.name });
         context += `\n\n--- Content from PDF ---\n${pdfData.text.substring(0, 10000)}\n--- End Content ---\n`;
       }
     } catch (err) {
@@ -365,38 +383,48 @@ export async function POST(req: Request) {
     if (!body.messages || !Array.isArray(body.messages)) {
       return NextResponse.json({ error: "Invalid messages format" }, { status: 400 });
     }
+    const messages = body.messages as Message[];
+    const attachments = body.attachments || [];
 
     const attachmentUrls =
-      body.attachments?.filter((a: Attachment) => a.type === "url").map((a: Attachment) => a.data) || [];
-    const urls = [...new Set([...attachmentUrls, ...extractInlineUrls(body.messages)])].slice(0, 5);
-
-    const [scrapedContext, pdfContext] = await Promise.all([
-      scrapeUrls(urls),
-      parsePdfs(body.attachments?.filter((a: Attachment) => a.type === "pdf") || []),
-    ]);
-    const combinedContext = scrapedContext + pdfContext;
-
-    const images = body.attachments?.filter((a: Attachment) => a.type === "image") || [];
-    const { instructions, input } = buildMessages(body.messages, combinedContext, images, body.customInstructions || "");
-
-    const stream = await createCompletionWithFallback({
-      instructions,
-      input,
-      model: MODEL,
-      max_output_tokens: 2048,
-      stream: true,
-    }) as AsyncIterable<string>;
+      attachments.filter((a: Attachment) => a.type === "url").map((a: Attachment) => a.data);
+    const urls = [...new Set([...attachmentUrls, ...extractInlineUrls(messages)])].slice(0, 5);
+    const pdfs = attachments.filter((a: Attachment) => a.type === "pdf");
+    const images = attachments.filter((a: Attachment) => a.type === "image");
 
     const encoder = new TextEncoder();
 
     const readable = new ReadableStream({
       async start(controller) {
+        // Scrape/PDF parsing happens inside the stream so the client sees
+        // live progress events instead of waiting on a silent connection.
+        const emit = (payload: unknown) =>
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+
         let fullReply = "";
 
         try {
+          const [scrapedContext, pdfContext] = await Promise.all([
+            scrapeUrls(urls, emit),
+            parsePdfs(pdfs, emit),
+          ]);
+          const combinedContext = scrapedContext + pdfContext;
+
+          const { instructions, input } = buildMessages(messages, combinedContext, images, body.customInstructions || "");
+
+          emit({ status: "thinking" });
+
+          const stream = await createCompletionWithFallback({
+            instructions,
+            input,
+            model: MODEL,
+            max_output_tokens: 2048,
+            stream: true,
+          }) as AsyncIterable<string>;
+
           for await (const token of stream) {
             fullReply += token;
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`));
+            emit({ token });
           }
 
           // Generate follow-up suggestions
@@ -416,9 +444,9 @@ export async function POST(req: Request) {
             // suggestions silently fail
           }
 
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true, suggestions })}\n\n`));
+          emit({ done: true, suggestions });
         } catch (err) {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: (err as Error).message })}\n\n`));
+          emit({ error: (err as Error).message });
         } finally {
           controller.close();
         }
