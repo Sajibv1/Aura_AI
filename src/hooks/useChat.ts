@@ -13,6 +13,8 @@ export type StatusEvent =
   | { status: "visited"; url: string; ok: boolean }
   | { status: "reading_pdf"; name?: string }
   | { status: "read_pdf"; name?: string }
+  | { status: "searching"; query: string }
+  | { status: "searched"; query: string; ok: boolean }
   | { status: "thinking" };
 
 type StreamCallbacks = {

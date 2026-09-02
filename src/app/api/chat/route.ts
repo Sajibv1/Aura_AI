@@ -17,6 +17,9 @@ const firecrawl = process.env.FIRECRAWL_API_KEY
 const HTTP_TIMEOUT = 10_000;
 const FIRECRAWL_TIMEOUT = 30_000;
 
+const BROWSER_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
+
 type InputContentPart =
   | { type: "input_text"; text: string }
   | { type: "input_image"; image_url: string };
@@ -26,12 +29,29 @@ type InputMessage = {
   content: string | InputContentPart[];
 };
 
+type FunctionCall = {
+  type: "function_call";
+  call_id: string;
+  name: string;
+  arguments: string;
+};
+
+type FunctionCallOutput = {
+  type: "function_call_output";
+  call_id: string;
+  output: string;
+};
+
+type InputItem = InputMessage | FunctionCall | FunctionCallOutput;
+
 type CompletionParams = {
   instructions?: string;
-  input: InputMessage[];
+  input: InputItem[];
   model: string;
   max_output_tokens?: number;
   stream: boolean;
+  tools?: unknown[];
+  previous_response_id?: string;
 };
 
 type ResponseOutput = {
@@ -56,14 +76,24 @@ async function requestWithKey(apiKey: string, params: CompletionParams) {
   }
 
   if (params.stream) {
-    return streamCompletion(res);
+    return res;
   }
   return res.json();
 }
 
-// The Responses API streams typed SSE events; assistant text arrives as
-// `response.output_text.delta` events whose `delta` field carries the token.
-async function* streamCompletion(res: Response): AsyncIterable<string> {
+// The Responses API streams typed SSE events. Text tokens arrive as
+// `response.output_text.delta`; tool calls as completed `function_call`
+// output items; `response.completed` carries the response id needed to
+// continue the conversation after running tools.
+type SseEvent = {
+  type?: string;
+  delta?: string;
+  item?: { type?: string } & Record<string, unknown>;
+  response?: { id?: string };
+  [key: string]: unknown;
+};
+
+async function* streamResponseEvents(res: Response): AsyncIterable<SseEvent> {
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -80,10 +110,7 @@ async function* streamCompletion(res: Response): AsyncIterable<string> {
       const data = trimmed.slice(5).trim();
       if (!data || data === "[DONE]") continue;
       try {
-        const event = JSON.parse(data) as { type?: string; delta?: string };
-        if (event.type === "response.output_text.delta" && event.delta) {
-          yield event.delta;
-        }
+        yield JSON.parse(data) as SseEvent;
       } catch {
         // skip malformed SSE lines
       }
@@ -131,6 +158,8 @@ export type StatusEvent =
   | { status: "visited"; url: string; ok: boolean }
   | { status: "reading_pdf"; name?: string }
   | { status: "read_pdf"; name?: string }
+  | { status: "searching"; query: string }
+  | { status: "searched"; query: string; ok: boolean }
   | { status: "thinking" };
 
 type ImageContentPart =
@@ -184,8 +213,7 @@ async function fetchPage(url: string): Promise<{ html: string; from: "fetch" } |
       signal: controller.signal,
       redirect: "follow",
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+        "User-Agent": BROWSER_USER_AGENT,
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
       },
@@ -241,6 +269,152 @@ async function fetchPageContent(url: string): Promise<string> {
   }
 
   return "";
+}
+
+// ─── Web search (DuckDuckGo) ───
+
+const SEARCH_TOOL = {
+  type: "function",
+  name: "web_search",
+  description:
+    "Search the web using DuckDuckGo. Use this whenever the user asks about current events, recent news, prices, or any facts you are unsure about and don't already have in context. Returns the top results with snippets plus the extracted text of the top pages.",
+  parameters: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "The search query" },
+    },
+    required: ["query"],
+  },
+} as const;
+
+type SearchResult = { title: string; url: string; snippet: string };
+
+// DuckDuckGo's HTML endpoint needs no API key; result links are wrapped in
+// a redirect (`//duckduckgo.com/l/?uddg=<encoded url>`) that we unwrap.
+async function duckDuckGoSearch(query: string): Promise<SearchResult[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT);
+
+  try {
+    const res = await fetch("https://html.duckduckgo.com/html/", {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": BROWSER_USER_AGENT,
+        Accept: "text/html",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+      body: new URLSearchParams({ q: query }).toString(),
+    });
+
+    if (!res.ok) return [];
+    const html = await res.text();
+    const $ = cheerio.load(html);
+
+    const results: SearchResult[] = [];
+    $(".result").each((_, el) => {
+      const link = $(el).find("a.result__a");
+      const href = link.attr("href") || "";
+      const uddg = href.match(/uddg=([^&]+)/);
+      const url = uddg ? decodeURIComponent(uddg[1]) : href.startsWith("http") ? href : "";
+      const title = link.text().trim();
+      const snippet = $(el).find(".result__snippet").text().trim();
+      if (title && url) results.push({ title, url, snippet });
+    });
+    return results.slice(0, 6);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function webSearch(query: string, emit: (payload: unknown) => void): Promise<string> {
+  emit({ status: "searching", query });
+  const results = await duckDuckGoSearch(query);
+  if (results.length === 0) {
+    emit({ status: "searched", query, ok: false });
+    return `No results found for "${query}" on DuckDuckGo.`;
+  }
+  emit({ status: "searched", query, ok: true });
+
+  // Fetch the top pages so the model can answer from real content,
+  // not just snippets.
+  const top = results.slice(0, 3);
+  const pages = await Promise.all(
+    top.map(async (r) => {
+      emit({ status: "visiting", url: r.url });
+      const fetched = await fetchPage(r.url);
+      const content = fetched ? extractWithCheerio(fetched.html).substring(0, 3000) : "";
+      emit({ status: "visited", url: r.url, ok: !!content });
+      return { ...r, content };
+    }),
+  );
+
+  let output = `DuckDuckGo results for "${query}":\n`;
+  for (const r of results) {
+    output += `\n- ${r.title} (${r.url})\n  ${r.snippet}`;
+  }
+  output += "\n\nExtracted page content:\n";
+  for (const p of pages) {
+    output += `\n--- ${p.title} (${p.url}) ---\n${p.content || "(could not fetch page)"}\n`;
+  }
+  return output;
+}
+
+// Runs the model with the web_search tool available, executing searches
+// between rounds until the model produces a final answer. Text tokens are
+// yielded as they stream; tool calls are resolved and fed back via
+// previous_response_id.
+async function* agentStream(
+  params: CompletionParams,
+  emit: (payload: unknown) => void,
+): AsyncGenerator<string> {
+  let previousResponseId: string | undefined;
+  let input: InputItem[] = params.input;
+
+  // Cap the number of search rounds so a confused model can't loop forever.
+  for (let round = 0; round < 4; round++) {
+    emit({ status: "thinking" });
+
+    const res = await createCompletionWithFallback({
+      ...params,
+      input,
+      previous_response_id: previousResponseId,
+      tools: [SEARCH_TOOL],
+      stream: true,
+    }) as Response;
+
+    const calls: FunctionCall[] = [];
+    for await (const event of streamResponseEvents(res)) {
+      if (event.type === "response.output_text.delta" && event.delta) {
+        yield event.delta;
+      } else if (event.type === "response.output_item.done" && event.item?.type === "function_call") {
+        calls.push(event.item as unknown as FunctionCall);
+      } else if (event.type === "response.completed" && event.response?.id) {
+        previousResponseId = event.response.id;
+      }
+    }
+
+    if (calls.length === 0) return;
+
+    input = [];
+    for (const call of calls) {
+      let output: string;
+      try {
+        const args = JSON.parse(call.arguments || "{}") as { query?: string };
+        if (call.name === "web_search" && args.query) {
+          output = await webSearch(args.query, emit);
+        } else {
+          output = "Error: unknown tool or missing query.";
+        }
+      } catch (err) {
+        output = `Error: ${(err as Error).message}`;
+      }
+      input.push({ type: "function_call_output", call_id: call.call_id, output });
+    }
+  }
 }
 
 // Users often paste links directly into the chat instead of using the
@@ -313,9 +487,11 @@ function buildMessages(
 
   let systemContent = `You are Aura, an intelligent AI assistant. Be helpful, concise, and friendly.
 
-You cannot browse the web by yourself, but this app automatically scrapes any URL the user shares (inline in their message or as an attachment) and provides the page content to you in this conversation. Therefore:
+You have a web_search tool that searches DuckDuckGo. Whenever the user asks about current events, recent news, or anything you are unsure about and don't already have in context, call web_search yourself — do not ask the user to search or claim you cannot. Answer from the search results you receive and cite the source URLs.
+
+The app also automatically scrapes any URL the user shares (inline in their message or as an attachment) and provides the page content to you in this conversation. Therefore:
 - If webpage content has been provided in context below, you HAVE effectively visited that page — answer questions about it based on that content. Never claim you cannot access a URL whose content is in the context.
-- If the user asks you to visit a URL but no content for it appears in the context, do NOT say "I can't browse the web." Instead, tell them the page content could not be retrieved and ask them to share the link again.`;
+- If the user asks you to visit a URL but no content for it appears in the context, call web_search for it or tell them the page content could not be retrieved.`;
   if (customInstructions) {
     systemContent += `\n\nCustom instructions: ${customInstructions}`;
   }
@@ -412,15 +588,10 @@ export async function POST(req: Request) {
 
           const { instructions, input } = buildMessages(messages, combinedContext, images, body.customInstructions || "");
 
-          emit({ status: "thinking" });
-
-          const stream = await createCompletionWithFallback({
-            instructions,
-            input,
-            model: MODEL,
-            max_output_tokens: 2048,
-            stream: true,
-          }) as AsyncIterable<string>;
+          const stream = agentStream(
+            { instructions, input, model: MODEL, max_output_tokens: 2048, stream: true },
+            emit,
+          );
 
           for await (const token of stream) {
             fullReply += token;

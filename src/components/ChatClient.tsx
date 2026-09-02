@@ -145,8 +145,19 @@ export function ChatClient() {
           return [...prev, { key: `pdf:${s.name ?? ""}`, text: `Reading ${s.name || "PDF"}`, state: "active" as const }];
         case "read_pdf":
           return prev.map((a) => (a.key === `pdf:${s.name ?? ""}` ? { ...a, state: "done" as const } : a));
+        case "searching":
+          return [...prev, { key: `search:${s.query}`, text: `Searching "${s.query}"`, state: "active" as const }];
+        case "searched":
+          return prev.map((a) =>
+            a.key === `search:${s.query}`
+              ? { ...a, state: s.ok ? ("done" as const) : ("failed" as const), text: s.ok ? `Searched "${s.query}"` : `No results for "${s.query}"` }
+              : a,
+          );
         case "thinking":
-          return [...prev, { key: "thinking", text: "Thinking…", state: "active" as const }];
+          // The agent loop emits "thinking" once per round; show it only once
+          return prev.some((a) => a.key === "thinking")
+            ? prev
+            : [...prev, { key: "thinking", text: "Thinking…", state: "active" as const }];
       }
     });
   }, []);
