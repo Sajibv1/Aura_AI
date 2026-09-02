@@ -15,6 +15,8 @@ export type StatusEvent =
   | { status: "read_pdf"; name?: string }
   | { status: "searching"; query: string }
   | { status: "searched"; query: string; ok: boolean }
+  | { status: "running_code" }
+  | { status: "ran_code"; ok: boolean }
   | { status: "thinking" };
 
 type StreamCallbacks = {

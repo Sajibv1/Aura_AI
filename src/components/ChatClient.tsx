@@ -205,6 +205,18 @@ export function ChatClient() {
               ? { ...a, state: s.ok ? ("done" as const) : ("failed" as const), text: s.ok ? `Searched "${s.query}"` : `No results for "${s.query}"` }
               : a,
           );
+        case "running_code": {
+          // The model may run code several times in one answer; give each
+          // run its own entry keyed by how many have come before.
+          const n = prev.filter((a) => a.key.startsWith("code:")).length;
+          return [...prev, { key: `code:${n}`, text: "Running JavaScript…", state: "active" as const }];
+        }
+        case "ran_code":
+          return prev.map((a) =>
+            a.key.startsWith("code:") && a.state === "active"
+              ? { ...a, state: s.ok ? ("done" as const) : ("failed" as const), text: s.ok ? "Ran JavaScript" : "JavaScript error" }
+              : a,
+          );
         case "thinking":
           // The agent loop emits "thinking" once per round; show it only once
           return prev.some((a) => a.key === "thinking")

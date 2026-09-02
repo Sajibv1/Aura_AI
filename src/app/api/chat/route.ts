@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import * as cheerio from "cheerio";
 import FirecrawlApp from "@mendable/firecrawl-js";
+import vm from "node:vm";
 
 export const runtime = "nodejs";
 
@@ -160,6 +161,8 @@ export type StatusEvent =
   | { status: "read_pdf"; name?: string }
   | { status: "searching"; query: string }
   | { status: "searched"; query: string; ok: boolean }
+  | { status: "running_code" }
+  | { status: "ran_code"; ok: boolean }
   | { status: "thinking" };
 
 type ImageContentPart =
@@ -423,10 +426,76 @@ async function webSearch(query: string, emit: (payload: unknown) => void): Promi
   return output;
 }
 
-// Runs the model with the web_search tool available, executing searches
-// between rounds until the model produces a final answer. Text tokens are
-// yielded as they stream; tool calls are resolved and fed back via
-// previous_response_id.
+// ─── JavaScript sandbox ───
+
+const RUN_JS_TOOL = {
+  type: "function",
+  name: "run_javascript",
+  description:
+    "Execute JavaScript code in a sandbox and get back its console.log output and the value of the last statement. Use this yourself whenever computing something: arithmetic, unit or date calculations, data processing, text transformation, or verifying an answer before you give it. The sandbox is synchronous and has no network, filesystem, timer, or DOM access.",
+  parameters: {
+    type: "object",
+    properties: {
+      code: {
+        type: "string",
+        description: "JavaScript source to execute. Use console.log() to print intermediate results.",
+      },
+    },
+    required: ["code"],
+  },
+} as const;
+
+const JS_CODE_LIMIT = 20_000;
+const JS_OUTPUT_LIMIT = 10_000;
+const JS_TIMEOUT_MS = 5000;
+
+function formatJsValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  // Errors thrown inside the vm come from another realm, so check by shape.
+  if (value && typeof value === "object" && "name" in value && "message" in value) {
+    const err = value as Error;
+    if (typeof err.name === "string" && typeof err.message === "string") {
+      return `${err.name}: ${err.message}`;
+    }
+  }
+  try {
+    return JSON.stringify(value, null, 2) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+// Executes code in a fresh V8 context (node:vm) whose only host API is a
+// capturing console — no require, process, fetch, setTimeout, or DOM. The
+// per-script timeout kills runaway loops. This is a compute sandbox, not a
+// hard security boundary, which is acceptable here: the code comes from the
+// model the app itself is driving, not from an untrusted third party.
+function runJavascript(code: string): { output: string; ok: boolean } {
+  if (code.length > JS_CODE_LIMIT) {
+    return { output: `Error: code exceeds ${JS_CODE_LIMIT} characters.`, ok: false };
+  }
+
+  const logs: string[] = [];
+  const log = (...args: unknown[]) => logs.push(args.map(formatJsValue).join(" "));
+  const sandbox = { console: { log, info: log, warn: log, error: log, debug: log } };
+  const context = vm.createContext(sandbox);
+
+  try {
+    const result = new vm.Script(code).runInContext(context, { timeout: JS_TIMEOUT_MS });
+    const lines = [...logs];
+    if (result !== undefined) lines.push(`Result: ${formatJsValue(result)}`);
+    const output = lines.join("\n").substring(0, JS_OUTPUT_LIMIT).trim();
+    return { output: output || "(no output — use console.log() to print results)", ok: true };
+  } catch (err) {
+    const output = [...logs, `Error: ${(err as Error).message}`].join("\n").substring(0, JS_OUTPUT_LIMIT);
+    return { output, ok: false };
+  }
+}
+
+// Runs the model with tools available (web_search, run_javascript),
+// executing them between rounds until the model produces a final answer.
+// Text tokens are yielded as they stream; tool calls are resolved and fed
+// back via previous_response_id.
 async function* agentStream(
   params: CompletionParams,
   emit: (payload: unknown) => void,
@@ -442,7 +511,7 @@ async function* agentStream(
       ...params,
       input,
       previous_response_id: previousResponseId,
-      tools: [SEARCH_TOOL],
+      tools: [SEARCH_TOOL, RUN_JS_TOOL],
       stream: true,
     }) as Response;
 
@@ -463,11 +532,16 @@ async function* agentStream(
     for (const call of calls) {
       let output: string;
       try {
-        const args = JSON.parse(call.arguments || "{}") as { query?: string };
+        const args = JSON.parse(call.arguments || "{}") as { query?: string; code?: string };
         if (call.name === "web_search" && args.query) {
           output = await webSearch(args.query, emit);
+        } else if (call.name === "run_javascript" && args.code) {
+          emit({ status: "running_code" });
+          const result = runJavascript(args.code);
+          emit({ status: "ran_code", ok: result.ok });
+          output = result.output;
         } else {
-          output = "Error: unknown tool or missing query.";
+          output = "Error: unknown tool or missing arguments.";
         }
       } catch (err) {
         output = `Error: ${(err as Error).message}`;
@@ -561,13 +635,9 @@ The app also automatically scrapes any URL the user shares (inline in their mess
 
   const instructions = `${systemContent}
 
-IMPORTANT: You have JavaScript code execution capability, but ONLY use it when the user explicitly asks you to analyze data, create visualizations, process information, or write code. Do NOT write JavaScript code in your responses unless specifically requested.
+You have a run_javascript tool that executes JavaScript in a sandbox and returns the output. Call it yourself whenever computation would help — arithmetic, unit conversions, date math, parsing or transforming data, counting, or checking your own work. Do not attempt non-trivial calculations by hand; run the code instead. The sandbox is synchronous (no network, files, or DOM) and returns console.log output plus the value of the last statement.
 
-When you ARE asked to do data analysis or visualization:
-1. Write the code inside a fenced code block with language set to "javascript"
-2. Use console.log() to display results
-3. Available: Math, JSON, Date, RegExp, Array, Map, Set, Promise, setTimeout, crypto, btoa/atob, TextEncoder — NO DOM, NO fetch, NO Node.js
-4. For external data, the app already scrapes URLs you provide — the content is in the conversation context above`.trim();
+Separately, when the user explicitly asks for JavaScript they can run themselves, write it in a fenced code block with language set to "javascript" and use console.log() to display results. Those blocks run in the user's browser sandbox: Math, JSON, Date, RegExp, Array, Map, Set, Promise, setTimeout, crypto, btoa/atob, TextEncoder are available — NO DOM, NO fetch, NO Node.js.`.trim();
 
   const lastMessage = messages[messages.length - 1];
   const previousMessages = messages.slice(0, -1);
