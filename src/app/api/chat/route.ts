@@ -4,11 +4,11 @@ import FirecrawlApp from "@mendable/firecrawl-js";
 
 export const runtime = "nodejs";
 
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const MODEL = "z-ai/glm-5.2:free";
+const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
+const MODEL = "gpt-5.6-sol";
 
-const openRouterKey = process.env.OPENROUTER_API_KEY || "";
-const openRouterFallbackKey = process.env.OPENROUTER_FALLBACK_API_KEY || "";
+const openAiKey = process.env.OPENAI_API_KEY || "";
+const openAiFallbackKey = process.env.OPENAI_FALLBACK_API_KEY || "";
 
 const firecrawl = process.env.FIRECRAWL_API_KEY
   ? new FirecrawlApp({ apiKey: process.env.FIRECRAWL_API_KEY })
@@ -17,37 +17,40 @@ const firecrawl = process.env.FIRECRAWL_API_KEY
 const HTTP_TIMEOUT = 10_000;
 const FIRECRAWL_TIMEOUT = 30_000;
 
-type ChatCompletionMessageParam = {
-  role: "system" | "user" | "assistant";
-  content: string | ImageContentPart[];
-};
+type InputContentPart =
+  | { type: "input_text"; text: string }
+  | { type: "input_image"; image_url: string };
 
-type ChatCompletionChunk = {
-  choices?: { delta?: { content?: string } }[];
+type InputMessage = {
+  role: "system" | "user" | "assistant";
+  content: string | InputContentPart[];
 };
 
 type CompletionParams = {
-  messages: ChatCompletionMessageParam[];
+  instructions?: string;
+  input: InputMessage[];
   model: string;
-  temperature?: number;
-  max_tokens?: number;
+  max_output_tokens?: number;
   stream: boolean;
 };
 
+type ResponseOutput = {
+  output?: { type: string; content?: { type: string; text?: string }[] }[];
+};
+
 async function requestWithKey(apiKey: string, params: CompletionParams) {
-  const res = await fetch(OPENROUTER_URL, {
+  const res = await fetch(OPENAI_RESPONSES_URL, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
-      "X-Title": "Aura AI",
     },
     body: JSON.stringify(params),
   });
 
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
-    const err = new Error(`OpenRouter API error ${res.status}: ${detail}`) as Error & { status?: number };
+    const err = new Error(`OpenAI API error ${res.status}: ${detail}`) as Error & { status?: number };
     err.status = res.status;
     throw err;
   }
@@ -58,7 +61,9 @@ async function requestWithKey(apiKey: string, params: CompletionParams) {
   return res.json();
 }
 
-async function* streamCompletion(res: Response): AsyncIterable<ChatCompletionChunk> {
+// The Responses API streams typed SSE events; assistant text arrives as
+// `response.output_text.delta` events whose `delta` field carries the token.
+async function* streamCompletion(res: Response): AsyncIterable<string> {
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -75,7 +80,10 @@ async function* streamCompletion(res: Response): AsyncIterable<ChatCompletionChu
       const data = trimmed.slice(5).trim();
       if (!data || data === "[DONE]") continue;
       try {
-        yield JSON.parse(data) as ChatCompletionChunk;
+        const event = JSON.parse(data) as { type?: string; delta?: string };
+        if (event.type === "response.output_text.delta" && event.delta) {
+          yield event.delta;
+        }
       } catch {
         // skip malformed SSE lines
       }
@@ -83,13 +91,24 @@ async function* streamCompletion(res: Response): AsyncIterable<ChatCompletionChu
   }
 }
 
+function extractOutputText(response: ResponseOutput): string {
+  let text = "";
+  for (const item of response.output || []) {
+    if (item.type !== "message") continue;
+    for (const part of item.content || []) {
+      if (part.type === "output_text" && part.text) text += part.text;
+    }
+  }
+  return text;
+}
+
 async function createCompletionWithFallback(params: CompletionParams) {
   try {
-    return await requestWithKey(openRouterKey, params);
+    return await requestWithKey(openAiKey, params);
   } catch (err) {
-    if (openRouterFallbackKey && isRetryableError(err)) {
-      console.warn("Primary OpenRouter key failed, trying fallback");
-      return await requestWithKey(openRouterFallbackKey, params);
+    if (openAiFallbackKey && isRetryableError(err)) {
+      console.warn("Primary OpenAI key failed, trying fallback");
+      return await requestWithKey(openAiFallbackKey, params);
     }
     throw err;
   }
@@ -261,8 +280,8 @@ function buildMessages(
   scrapedContext: string,
   images: Attachment[],
   customInstructions: string,
-): ChatCompletionMessageParam[] {
-  const formatted: ChatCompletionMessageParam[] = [];
+): { instructions: string; input: InputMessage[] } {
+  const input: InputMessage[] = [];
 
   let systemContent = `You are Aura, an intelligent AI assistant. Be helpful, concise, and friendly.`;
   if (customInstructions) {
@@ -272,25 +291,26 @@ function buildMessages(
     systemContent += `\n\nYou have been provided with the following scraped webpage context. Use it to answer the user's queries if relevant.\n${scrapedContext}`;
   }
 
-  systemContent += `\n\nIMPORTANT: You have JavaScript code execution capability, but ONLY use it when the user explicitly asks you to analyze data, create visualizations, process information, or write code. Do NOT write JavaScript code in your responses unless specifically requested.
+  const instructions = `${systemContent}
+
+IMPORTANT: You have JavaScript code execution capability, but ONLY use it when the user explicitly asks you to analyze data, create visualizations, process information, or write code. Do NOT write JavaScript code in your responses unless specifically requested.
 
 When you ARE asked to do data analysis or visualization:
 1. Write the code inside a fenced code block with language set to "javascript"
 2. Use console.log() to display results
 3. Available: Math, JSON, Date, RegExp, Array, Map, Set, Promise, setTimeout, crypto, btoa/atob, TextEncoder — NO DOM, NO fetch, NO Node.js
-4. For external data, the app already scrapes URLs you provide — the content is in the conversation context above`;
-  formatted.push({ role: "system", content: systemContent.trim() });
+4. For external data, the app already scrapes URLs you provide — the content is in the conversation context above`.trim();
 
   const lastMessage = messages[messages.length - 1];
   const previousMessages = messages.slice(0, -1);
 
   for (const msg of previousMessages) {
     if (msg.role === "system") {
-      formatted.push({ role: "system", content: msg.content as string });
+      input.push({ role: "system", content: msg.content as string });
     } else if (msg.role === "user") {
-      formatted.push({ role: "user", content: msg.content as string });
+      input.push({ role: "user", content: msg.content as string });
     } else {
-      formatted.push({ role: "assistant", content: msg.content as string });
+      input.push({ role: "assistant", content: msg.content as string });
     }
   }
 
@@ -298,24 +318,24 @@ When you ARE asked to do data analysis or visualization:
     const text = typeof lastMessage.content === "string"
       ? lastMessage.content
       : "Please analyze this image.";
-    const contentArray: ImageContentPart[] = [
-      { type: "text", text: text || "Please analyze this image." },
+    const contentParts: InputContentPart[] = [
+      { type: "input_text", text: text || "Please analyze this image." },
     ];
     for (const img of images) {
-      contentArray.push({ type: "image_url", image_url: { url: img.data } });
+      contentParts.push({ type: "input_image", image_url: img.data });
     }
-    formatted.push({ role: "user", content: contentArray });
+    input.push({ role: "user", content: contentParts });
   } else {
     if (lastMessage.role === "system") {
-      formatted.push({ role: "system", content: lastMessage.content as string });
+      input.push({ role: "system", content: lastMessage.content as string });
     } else if (lastMessage.role === "user") {
-      formatted.push({ role: "user", content: lastMessage.content as string });
+      input.push({ role: "user", content: lastMessage.content as string });
     } else {
-      formatted.push({ role: "assistant", content: lastMessage.content as string });
+      input.push({ role: "assistant", content: lastMessage.content as string });
     }
   }
 
-  return formatted;
+  return { instructions, input };
 }
 
 // ─── Route ───
@@ -339,15 +359,15 @@ export async function POST(req: Request) {
     const combinedContext = scrapedContext + pdfContext;
 
     const images = body.attachments?.filter((a: Attachment) => a.type === "image") || [];
-    const formattedMessages = buildMessages(body.messages, combinedContext, images, body.customInstructions || "");
+    const { instructions, input } = buildMessages(body.messages, combinedContext, images, body.customInstructions || "");
 
     const stream = await createCompletionWithFallback({
-      messages: formattedMessages,
+      instructions,
+      input,
       model: MODEL,
-      temperature: 0.5,
-      max_tokens: 2048,
+      max_output_tokens: 2048,
       stream: true,
-    }) as AsyncIterable<ChatCompletionChunk>;
+    }) as AsyncIterable<string>;
 
     const encoder = new TextEncoder();
 
@@ -356,29 +376,22 @@ export async function POST(req: Request) {
         let fullReply = "";
 
         try {
-          for await (const chunk of stream) {
-            const token = chunk.choices?.[0]?.delta?.content || "";
-            if (token) {
-              fullReply += token;
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`));
-            }
+          for await (const token of stream) {
+            fullReply += token;
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`));
           }
 
           // Generate follow-up suggestions
           let suggestions: string[] = [];
           try {
             const suggestCompletion = await createCompletionWithFallback({
-              messages: [
-                { role: "system", content: "Generate 3 short follow-up questions the user might ask next based on this conversation. Return only a JSON array of strings, nothing else." },
-                ...formattedMessages,
-                { role: "assistant", content: fullReply },
-              ],
+              instructions: "Generate 3 short follow-up questions the user might ask next based on this conversation. Return only a JSON array of strings, nothing else.",
+              input: [...input, { role: "assistant", content: fullReply }],
               model: MODEL,
-              temperature: 0.7,
-              max_tokens: 200,
+              max_output_tokens: 200,
               stream: false,
-            }) as { choices: { message?: { content?: string } }[] };
-            const raw = suggestCompletion.choices[0]?.message?.content || "[]";
+            }) as ResponseOutput;
+            const raw = extractOutputText(suggestCompletion) || "[]";
             const parsed = JSON.parse(raw);
             if (Array.isArray(parsed)) suggestions = parsed.slice(0, 3);
           } catch {
