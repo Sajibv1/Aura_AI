@@ -277,7 +277,7 @@ const SEARCH_TOOL = {
   type: "function",
   name: "web_search",
   description:
-    "Search the web using DuckDuckGo. Use this whenever the user asks about current events, recent news, prices, or any facts you are unsure about and don't already have in context. Returns the top results with snippets plus the extracted text of the top pages.",
+    "Search the web. Use this whenever the user asks about current events, recent news, prices, or any facts you are unsure about and don't already have in context. Returns the top results with snippets plus the extracted text of the top pages.",
   parameters: {
     type: "object",
     properties: {
@@ -289,53 +289,113 @@ const SEARCH_TOOL = {
 
 type SearchResult = { title: string; url: string; snippet: string };
 
-// DuckDuckGo's HTML endpoint needs no API key; result links are wrapped in
-// a redirect (`//duckduckgo.com/l/?uddg=<encoded url>`) that we unwrap.
-async function duckDuckGoSearch(query: string): Promise<SearchResult[]> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT);
+// Unwrap DuckDuckGo's redirect links (`//duckduckgo.com/l/?uddg=<encoded url>`).
+function unwrapDdgUrl(href: string): string {
+  const uddg = href.match(/uddg=([^&]+)/);
+  if (uddg) return decodeURIComponent(uddg[1]);
+  return href.startsWith("http") ? href : "";
+}
 
-  try {
-    const res = await fetch("https://html.duckduckgo.com/html/", {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": BROWSER_USER_AGENT,
-        Accept: "text/html",
-        "Accept-Language": "en-US,en;q=0.9",
-      },
-      body: new URLSearchParams({ q: query }).toString(),
-    });
+// Tavily is a proper search API (free tier, no credit card) that works
+// reliably from datacenter IPs; DuckDuckGo's endpoints frequently block
+// them, so Tavily is preferred whenever TAVILY_API_KEY is configured.
+async function tavilySearch(query: string): Promise<SearchResult[]> {
+  const res = await fetch("https://api.tavily.com/search", {
+    method: "POST",
+    signal: AbortSignal.timeout(HTTP_TIMEOUT),
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.TAVILY_API_KEY}`,
+    },
+    body: JSON.stringify({ query, max_results: 6 }),
+  });
 
-    if (!res.ok) return [];
-    const html = await res.text();
-    const $ = cheerio.load(html);
+  if (!res.ok) throw new Error(`Tavily API error ${res.status}`);
+  const data = (await res.json()) as { results?: { title: string; url: string; content: string }[] };
+  return (data.results || []).map((r) => ({ title: r.title, url: r.url, snippet: r.content }));
+}
 
-    const results: SearchResult[] = [];
-    $(".result").each((_, el) => {
-      const link = $(el).find("a.result__a");
-      const href = link.attr("href") || "";
-      const uddg = href.match(/uddg=([^&]+)/);
-      const url = uddg ? decodeURIComponent(uddg[1]) : href.startsWith("http") ? href : "";
-      const title = link.text().trim();
-      const snippet = $(el).find(".result__snippet").text().trim();
-      if (title && url) results.push({ title, url, snippet });
-    });
-    return results.slice(0, 6);
-  } catch {
-    return [];
-  } finally {
-    clearTimeout(timer);
+// DuckDuckGo's HTML endpoint needs no API key, but may serve an
+// anomaly/block page with zero results on some IPs.
+async function ddgHtmlSearch(query: string): Promise<SearchResult[]> {
+  const res = await fetch("https://html.duckduckgo.com/html/", {
+    method: "POST",
+    signal: AbortSignal.timeout(HTTP_TIMEOUT),
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": BROWSER_USER_AGENT,
+      Accept: "text/html",
+      "Accept-Language": "en-US,en;q=0.9",
+    },
+    body: new URLSearchParams({ q: query }).toString(),
+  });
+
+  if (!res.ok) throw new Error(`DDG html ${res.status}`);
+  const $ = cheerio.load(await res.text());
+
+  const results: SearchResult[] = [];
+  $(".result").each((_, el) => {
+    const link = $(el).find("a.result__a");
+    const url = unwrapDdgUrl(link.attr("href") || "");
+    const title = link.text().trim();
+    const snippet = $(el).find(".result__snippet").text().trim();
+    if (title && url) results.push({ title, url, snippet });
+  });
+  return results.slice(0, 6);
+}
+
+// DuckDuckGo's lite endpoint — same index, different markup, occasionally
+// reachable when the html endpoint is blocked.
+async function ddgLiteSearch(query: string): Promise<SearchResult[]> {
+  const res = await fetch(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`, {
+    signal: AbortSignal.timeout(HTTP_TIMEOUT),
+    headers: {
+      "User-Agent": BROWSER_USER_AGENT,
+      Accept: "text/html",
+      "Accept-Language": "en-US,en;q=0.9",
+    },
+  });
+
+  if (!res.ok) throw new Error(`DDG lite ${res.status}`);
+  const $ = cheerio.load(await res.text());
+
+  const results: SearchResult[] = [];
+  $("a.result-link").each((_, el) => {
+    const url = unwrapDdgUrl($(el).attr("href") || "");
+    const title = $(el).text().trim();
+    const snippet = $(el).closest("tr").next("tr").find("td.result-snippet").text().trim();
+    if (title && url) results.push({ title, url, snippet });
+  });
+  return results.slice(0, 6);
+}
+
+// Tries each search provider in order until one returns results. Failures
+// are logged (visible in Vercel logs) so blocked providers are diagnosable.
+async function searchWeb(query: string): Promise<SearchResult[]> {
+  const providers: { name: string; run: (q: string) => Promise<SearchResult[]> }[] = [
+    ...(process.env.TAVILY_API_KEY ? [{ name: "tavily", run: tavilySearch }] : []),
+    { name: "duckduckgo-html", run: ddgHtmlSearch },
+    { name: "duckduckgo-lite", run: ddgLiteSearch },
+  ];
+
+  for (const provider of providers) {
+    try {
+      const results = await provider.run(query);
+      if (results.length > 0) return results;
+      console.warn(`[search] ${provider.name}: 0 results for "${query}" (likely blocked or no matches)`);
+    } catch (err) {
+      console.warn(`[search] ${provider.name} failed: ${(err as Error).message}`);
+    }
   }
+  return [];
 }
 
 async function webSearch(query: string, emit: (payload: unknown) => void): Promise<string> {
   emit({ status: "searching", query });
-  const results = await duckDuckGoSearch(query);
+  const results = await searchWeb(query);
   if (results.length === 0) {
     emit({ status: "searched", query, ok: false });
-    return `No results found for "${query}" on DuckDuckGo.`;
+    return `No results found for "${query}".`;
   }
   emit({ status: "searched", query, ok: true });
 
@@ -352,7 +412,7 @@ async function webSearch(query: string, emit: (payload: unknown) => void): Promi
     }),
   );
 
-  let output = `DuckDuckGo results for "${query}":\n`;
+  let output = `Web search results for "${query}":\n`;
   for (const r of results) {
     output += `\n- ${r.title} (${r.url})\n  ${r.snippet}`;
   }
@@ -487,7 +547,7 @@ function buildMessages(
 
   let systemContent = `You are Aura, an intelligent AI assistant. Be helpful, concise, and friendly.
 
-You have a web_search tool that searches DuckDuckGo. Whenever the user asks about current events, recent news, or anything you are unsure about and don't already have in context, call web_search yourself — do not ask the user to search or claim you cannot. Answer from the search results you receive and cite the source URLs.
+You have a web_search tool that searches the web. Whenever the user asks about current events, recent news, or anything you are unsure about and don't already have in context, call web_search yourself — do not ask the user to search or claim you cannot. Answer from the search results you receive and cite the source URLs.
 
 The app also automatically scrapes any URL the user shares (inline in their message or as an attachment) and provides the page content to you in this conversation. Therefore:
 - If webpage content has been provided in context below, you HAVE effectively visited that page — answer questions about it based on that content. Never claim you cannot access a URL whose content is in the context.
