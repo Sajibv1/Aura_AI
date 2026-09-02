@@ -1,18 +1,14 @@
 import { NextResponse } from "next/server";
-import Groq from "groq-sdk";
-import type { ChatCompletionMessageParam, ChatCompletionChunk } from "groq-sdk/resources/chat/completions";
 import * as cheerio from "cheerio";
 import FirecrawlApp from "@mendable/firecrawl-js";
 
 export const runtime = "nodejs";
 
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY || "",
-});
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const MODEL = "z-ai/glm-5.2:free";
 
-const groqFallback = process.env.GROQ_FALLBACK_API_KEY
-  ? new Groq({ apiKey: process.env.GROQ_FALLBACK_API_KEY })
-  : null;
+const openRouterKey = process.env.OPENROUTER_API_KEY || "";
+const openRouterFallbackKey = process.env.OPENROUTER_FALLBACK_API_KEY || "";
 
 const firecrawl = process.env.FIRECRAWL_API_KEY
   ? new FirecrawlApp({ apiKey: process.env.FIRECRAWL_API_KEY })
@@ -21,18 +17,79 @@ const firecrawl = process.env.FIRECRAWL_API_KEY
 const HTTP_TIMEOUT = 10_000;
 const FIRECRAWL_TIMEOUT = 30_000;
 
-async function createCompletionWithFallback(
-  params: { messages: ChatCompletionMessageParam[]; model: string; temperature?: number; max_tokens?: number; stream: boolean },
-) {
-  async function tryClient(client: Groq) {
-    return client.chat.completions.create(params);
+type ChatCompletionMessageParam = {
+  role: "system" | "user" | "assistant";
+  content: string | ImageContentPart[];
+};
+
+type ChatCompletionChunk = {
+  choices?: { delta?: { content?: string } }[];
+};
+
+type CompletionParams = {
+  messages: ChatCompletionMessageParam[];
+  model: string;
+  temperature?: number;
+  max_tokens?: number;
+  stream: boolean;
+};
+
+async function requestWithKey(apiKey: string, params: CompletionParams) {
+  const res = await fetch(OPENROUTER_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "X-Title": "Aura AI",
+    },
+    body: JSON.stringify(params),
+  });
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    const err = new Error(`OpenRouter API error ${res.status}: ${detail}`) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
+
+  if (params.stream) {
+    return streamCompletion(res);
+  }
+  return res.json();
+}
+
+async function* streamCompletion(res: Response): AsyncIterable<ChatCompletionChunk> {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const data = trimmed.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      try {
+        yield JSON.parse(data) as ChatCompletionChunk;
+      } catch {
+        // skip malformed SSE lines
+      }
+    }
+  }
+}
+
+async function createCompletionWithFallback(params: CompletionParams) {
   try {
-    return await tryClient(groq);
+    return await requestWithKey(openRouterKey, params);
   } catch (err) {
-    if (groqFallback && isRetryableError(err)) {
-      console.warn("Primary Groq key failed, trying fallback");
-      return await tryClient(groqFallback);
+    if (openRouterFallbackKey && isRetryableError(err)) {
+      console.warn("Primary OpenRouter key failed, trying fallback");
+      return await requestWithKey(openRouterFallbackKey, params);
     }
     throw err;
   }
@@ -284,11 +341,9 @@ export async function POST(req: Request) {
     const images = body.attachments?.filter((a: Attachment) => a.type === "image") || [];
     const formattedMessages = buildMessages(body.messages, combinedContext, images, body.customInstructions || "");
 
-    const model = images.length > 0 ? "meta-llama/llama-4-scout-17b-16e-instruct" : "llama-3.3-70b-versatile";
-
     const stream = await createCompletionWithFallback({
       messages: formattedMessages,
-      model,
+      model: MODEL,
       temperature: 0.5,
       max_tokens: 2048,
       stream: true,
@@ -302,7 +357,7 @@ export async function POST(req: Request) {
 
         try {
           for await (const chunk of stream) {
-            const token = chunk.choices[0]?.delta?.content || "";
+            const token = chunk.choices?.[0]?.delta?.content || "";
             if (token) {
               fullReply += token;
               controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`));
@@ -318,7 +373,7 @@ export async function POST(req: Request) {
                 ...formattedMessages,
                 { role: "assistant", content: fullReply },
               ],
-              model: "llama-3.3-70b-versatile",
+              model: MODEL,
               temperature: 0.7,
               max_tokens: 200,
               stream: false,
