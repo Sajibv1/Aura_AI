@@ -5,7 +5,7 @@ import FirecrawlApp from "@mendable/firecrawl-js";
 export const runtime = "nodejs";
 
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
-const MODEL = "gpt-5.6-sol";
+const MODEL = "gpt-4o";
 
 const openAiKey = process.env.OPENAI_API_KEY || "";
 const openAiFallbackKey = process.env.OPENAI_FALLBACK_API_KEY || "";
