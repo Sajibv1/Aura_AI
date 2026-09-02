@@ -3,10 +3,18 @@
 import { useState, useRef, useEffect, useCallback, ChangeEvent, FormEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import {
-  Send, Image as ImageIcon, Link as LinkIcon, X, Loader2, FileText, Sparkles, Check,
+  CheckIcon,
+  FileTextIcon,
+  ImageIcon,
+  LinkIcon,
+  SendIcon,
+  SparklesIcon,
+  SquareIcon,
+  XIcon,
 } from "lucide-react";
+
 import { useConversations } from "@/hooks/useConversations";
-import { useChat, type Attachment, type StatusEvent } from "@/hooks/useChat";
+import { useChat, type Attachment as ChatAttachment, type StatusEvent } from "@/hooks/useChat";
 import { useTheme } from "@/hooks/useTheme";
 import { useCustomInstructions } from "@/hooks/useCustomInstructions";
 import { Sidebar } from "@/components/Sidebar";
@@ -15,6 +23,54 @@ import type { Components } from "react-markdown";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { ExportButton } from "@/components/ExportButton";
 import { CustomInstructionsModal } from "@/components/CustomInstructionsModal";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { Input } from "@/components/ui/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupTextarea,
+} from "@/components/ui/input-group";
+import {
+  Marker,
+  MarkerContent,
+  MarkerIcon,
+} from "@/components/ui/marker";
+import {
+  Message,
+  MessageAvatar,
+  MessageContent,
+} from "@/components/ui/message";
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+} from "@/components/ui/message-scroller";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Spinner } from "@/components/ui/spinner";
+import {
+  Attachment,
+  AttachmentAction,
+  AttachmentActions,
+  AttachmentContent,
+  AttachmentGroup,
+  AttachmentMedia,
+  AttachmentTitle,
+} from "@/components/ui/attachment";
+import { Bubble, BubbleContent } from "@/components/ui/bubble";
+import { cn } from "@/lib/utils";
 
 type ActivityItem = {
   key: string;
@@ -39,7 +95,7 @@ export function ChatClient() {
   } = useConversations();
 
   const [input, setInput] = useState("");
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [urlInput, setUrlInput] = useState("");
   const [streamingContent, setStreamingContent] = useState("");
@@ -49,9 +105,7 @@ export function ChatClient() {
   const [initDone, setInitDone] = useState(false);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const dropRef = useRef<HTMLDivElement>(null);
 
   // Initialise first conversation
   useEffect(() => {
@@ -62,10 +116,6 @@ export function ChatClient() {
       }
     }
   }, [loaded, conversations.length, newConversation, initDone]);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [activeConversation?.messages, streamingContent]);
 
   const handleFileUpload = useCallback((file: File) => {
     const isPdf = file.type === "application/pdf";
@@ -120,6 +170,7 @@ export function ChatClient() {
     newConversation();
     setStreamingContent("");
     setSuggestions([]);
+    setActivity([]);
     setAttachments([]);
     setInput("");
   }, [newConversation]);
@@ -128,6 +179,7 @@ export function ChatClient() {
     switchConversation(id);
     setStreamingContent("");
     setSuggestions([]);
+    setActivity([]);
   }, [switchConversation]);
 
   const handleStatus = useCallback((s: StatusEvent) => {
@@ -236,18 +288,14 @@ export function ChatClient() {
 
   if (!loaded) {
     return (
-      <div className="app-layout" style={{ alignItems: "center", justifyContent: "center" }}>
-        <div className="typing-indicator" style={{ transform: "scale(2)" }}>
-          <div className="typing-dot" />
-          <div className="typing-dot" />
-          <div className="typing-dot" />
-        </div>
+      <div className="flex h-svh items-center justify-center">
+        <Spinner className="size-6" />
       </div>
     );
   }
 
   return (
-    <div className={`app-layout ${dragOver ? "drag-over" : ""}`} ref={dropRef}>
+    <div className="flex h-svh">
       <Sidebar
         conversations={conversations}
         activeId={activeId}
@@ -259,154 +307,262 @@ export function ChatClient() {
         onToggle={() => setSidebarCollapsed((c) => !c)}
       />
 
-      <main className="main-area">
-        <header className="header">
-          <div className="header-left">
-            <h1>Aura</h1>
+      <main
+        className="relative flex min-w-0 flex-1 flex-col"
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+      >
+        {dragOver && (
+          <div className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-xl border-2 border-dashed border-ring/50 bg-background/80">
+            <span className="text-sm text-muted-foreground">Drop file here</span>
           </div>
-          <div className="header-right">
+        )}
+
+        <header className="flex h-12 shrink-0 items-center justify-between border-b px-4">
+          <div className="flex items-center gap-2">
+            <SparklesIcon className="size-4 text-muted-foreground" />
+            <h1 className="text-base font-semibold tracking-tight">Aura</h1>
+            <Badge variant="secondary" className="hidden sm:inline-flex">gpt-4o</Badge>
+          </div>
+          <div className="flex items-center gap-0.5">
             <ExportButton conversation={activeConversation} />
             <CustomInstructionsModal value={instructionsHook.instructions} onChange={instructionsHook.setInstructions} />
             <ThemeToggle theme={themeHook.theme} onToggle={themeHook.toggle} />
           </div>
         </header>
 
-        <div
-          className="chat-container"
-          onDrop={handleDrop}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-        >
-          {dragOver && <div className="drop-overlay"><div className="drop-indicator">Drop file here</div></div>}
+        <MessageScrollerProvider>
+          <MessageScroller className="mx-auto w-full max-w-3xl">
+            <MessageScrollerViewport>
+              <MessageScrollerContent className="px-4 py-6">
+                {messages.length === 0 ? (
+                  <Empty className="m-auto">
+                    <EmptyHeader>
+                      <EmptyMedia>
+                        <SparklesIcon />
+                      </EmptyMedia>
+                      <EmptyTitle className="text-xl">Aura</EmptyTitle>
+                      <EmptyDescription>
+                        Your intelligent multi-modal assistant — it can search
+                        the web, read pages you share, and analyze images and
+                        PDFs.
+                      </EmptyDescription>
+                    </EmptyHeader>
+                    <EmptyContent className="flex-row flex-wrap justify-center">
+                      <Badge variant="outline">
+                        <ImageIcon data-icon="inline-start" />
+                        Attach images for analysis
+                      </Badge>
+                      <Badge variant="outline">
+                        <LinkIcon data-icon="inline-start" />
+                        Share URLs for context
+                      </Badge>
+                      <Badge variant="outline">
+                        <FileTextIcon data-icon="inline-start" />
+                        Upload PDFs to extract text
+                      </Badge>
+                    </EmptyContent>
+                  </Empty>
+                ) : (
+                  messages.map((msg, idx) => {
+                    const isStreaming =
+                      idx === messages.length - 1 && msg.role === "assistant" && msg.content === "";
+                    return (
+                      <MessageScrollerItem
+                        key={idx}
+                        messageId={String(idx)}
+                        scrollAnchor={msg.role === "user"}
+                      >
+                        <Message align={msg.role === "user" ? "end" : "start"}>
+                          <MessageAvatar>
+                            {msg.role === "assistant" ? (
+                              <SparklesIcon className="size-4" />
+                            ) : (
+                              <span className="text-xs font-semibold">U</span>
+                            )}
+                          </MessageAvatar>
+                          <MessageContent>
+                            <Bubble variant={msg.role === "user" ? "default" : "muted"}>
+                              <BubbleContent
+                                className={msg.role === "assistant" ? "markdown-body" : "whitespace-pre-wrap"}
+                              >
+                                {msg.role === "assistant" ? (
+                                  <ReactMarkdown components={markdownComponents}>
+                                    {isStreaming ? streamingContent || "" : msg.content}
+                                  </ReactMarkdown>
+                                ) : (
+                                  msg.content
+                                )}
+                              </BubbleContent>
+                            </Bubble>
+                          </MessageContent>
+                        </Message>
+                      </MessageScrollerItem>
+                    );
+                  })
+                )}
 
-          {messages.length === 0 && !chat.isLoading ? (
-            <div className="welcome">
-              <div className="welcome-logo"><Sparkles size={32} /></div>
-              <h2>Aura</h2>
-              <p>Your Intelligent Multi-modal RAG Assistant</p>
-              <div className="welcome-hints">
-                <div className="hint"><ImageIcon size={16} /> Attach images for analysis</div>
-                <div className="hint"><LinkIcon size={16} /> Share URLs for context</div>
-                <div className="hint"><FileText size={16} /> Upload PDFs to extract text</div>
-              </div>
-            </div>
-          ) : (
-            <div className="messages-area">
-              {messages.map((msg, idx) => (
-                <div key={idx} className={`message ${msg.role}`}>
-                  <div className="message-avatar">
-                    {msg.role === "assistant" ? <Sparkles size={16} /> : "U"}
-                  </div>
-                  <div className="message-bubble">
-                    {msg.role === "assistant" ? (
-                      <>
-                        <ReactMarkdown components={markdownComponents}>
-                          {idx === messages.length - 1 && msg.content === "" ? streamingContent || "" : msg.content}
-                        </ReactMarkdown>
-                        {idx === messages.length - 1 && msg.content === "" && chat.isLoading && (
-                          <span className="stream-cursor" />
-                        )}
-                      </>
-                    ) : (
-                      <p>{msg.content}</p>
-                    )}
-                  </div>
-                </div>
-              ))}
-              <div ref={messagesEndRef} />
-              {chat.isLoading && activity.length > 0 && (
-                <div className="activity-feed">
-                  {activity.map((a) => (
-                    <div key={a.key} className={`activity-item ${a.state}`}>
-                      <span className="activity-icon">
-                        {a.state === "active" ? (
-                          <Loader2 size={12} className="animate-spin" />
-                        ) : a.state === "done" ? (
-                          <Check size={12} />
-                        ) : (
-                          <X size={12} />
-                        )}
-                      </span>
-                      <span className="activity-text">{a.text}</span>
+                {chat.isLoading && activity.length > 0 && (
+                  <MessageScrollerItem scrollAnchor={false}>
+                    <div className="flex flex-col gap-1.5 pl-10">
+                      {activity.map((a) => (
+                        <Marker key={a.key} role="status">
+                          <MarkerIcon>
+                            {a.state === "active" ? (
+                              <Spinner />
+                            ) : a.state === "done" ? (
+                              <CheckIcon />
+                            ) : (
+                              <XIcon className="text-destructive" />
+                            )}
+                          </MarkerIcon>
+                          <MarkerContent
+                            className={a.state === "failed" ? "text-destructive" : undefined}
+                          >
+                            {a.text}
+                          </MarkerContent>
+                        </Marker>
+                      ))}
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+                  </MessageScrollerItem>
+                )}
+              </MessageScrollerContent>
+            </MessageScrollerViewport>
+            <MessageScrollerButton />
+          </MessageScroller>
+        </MessageScrollerProvider>
 
-          {suggestions.length > 0 && (
-            <div className="suggestions">
-              <p className="suggestions-label">Follow-up questions:</p>
-              <div className="suggestions-list">
-                {suggestions.map((s, i) => (
-                  <button key={i} className="suggestion-chip" onClick={() => handleSuggestionClick(s)}>
-                    {s}
-                  </button>
-                ))}
-              </div>
+        {suggestions.length > 0 && (
+          <div className="mx-auto w-full max-w-3xl px-4 pb-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-muted-foreground">Follow-up:</span>
+              {suggestions.map((s, i) => (
+                <Button
+                  key={i}
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full"
+                  onClick={() => handleSuggestionClick(s)}
+                >
+                  {s}
+                </Button>
+              ))}
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
-        <div className="input-area">
-          <div className="input-wrapper">
+        <div className="mx-auto w-full max-w-3xl px-4 pb-4">
+          <form onSubmit={handleSend}>
             {attachments.length > 0 && (
-              <div className="active-attachments">
+              <AttachmentGroup className="mb-2 py-0">
                 {attachments.map((att, idx) => (
-                  <div key={idx} className="active-attachment">
-                    {att.type === "image" ? (
-                      <img src={att.data} alt="" style={{ width: 24, height: 24, borderRadius: 4, objectFit: "cover" }} />
-                    ) : att.type === "pdf" ? (
-                      <FileText size={14} />
-                    ) : (
-                      <LinkIcon size={14} />
-                    )}
-                    <span className="att-name">{att.name || (att.type === "image" ? "Image" : att.data)}</span>
-                    <button className="icon-btn-xs" onClick={() => removeAttachment(idx)}><X size={14} /></button>
-                  </div>
+                  <Attachment key={idx} size="sm">
+                    <AttachmentMedia variant={att.type === "image" ? "image" : "icon"}>
+                      {att.type === "image" ? (
+                        <img src={att.data} alt="" />
+                      ) : att.type === "pdf" ? (
+                        <FileTextIcon />
+                      ) : (
+                        <LinkIcon />
+                      )}
+                    </AttachmentMedia>
+                    <AttachmentContent>
+                      <AttachmentTitle>{att.name || (att.type === "image" ? "Image" : att.data)}</AttachmentTitle>
+                    </AttachmentContent>
+                    <AttachmentActions>
+                      <AttachmentAction
+                        aria-label="Remove attachment"
+                        onClick={() => removeAttachment(idx)}
+                      >
+                        <XIcon />
+                      </AttachmentAction>
+                    </AttachmentActions>
+                  </Attachment>
                 ))}
-              </div>
+              </AttachmentGroup>
             )}
 
-            <div className="input-row">
-              <div style={{ position: "relative" }}>
-                <button type="button" className="icon-btn" onClick={() => setShowUrlInput((v) => !v)} title="Attach Link">
-                  <LinkIcon size={20} />
-                </button>
-                {showUrlInput && (
-                  <div className="url-popover">
-                    <form onSubmit={handleAddUrl} style={{ display: "flex", gap: "8px" }}>
-                      <input autoFocus type="url" placeholder="https://example.com" value={urlInput} onChange={(e) => setUrlInput(e.target.value)} />
-                      <button type="submit">Add</button>
-                    </form>
-                  </div>
-                )}
-              </div>
-
-              <button type="button" className="icon-btn" onClick={() => fileInputRef.current?.click()} title="Upload Image or PDF">
-                <ImageIcon size={20} />
-              </button>
-              <input type="file" accept="image/*,application/pdf" ref={fileInputRef} style={{ display: "none" }} onChange={onFileInputChange} />
-
-              <textarea
-                className="input-field"
-                placeholder="Ask a question or describe the attached file..."
+            <InputGroup>
+              <InputGroupTextarea
+                placeholder="Ask anything… paste a link or attach files for context"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                rows={1}
+                className="min-h-12 max-h-48 overflow-y-auto"
               />
+              <InputGroupAddon align="block-end" className="gap-0.5 p-1.5">
+                <Popover open={showUrlInput} onOpenChange={setShowUrlInput}>
+                  <PopoverTrigger
+                    render={
+                      <InputGroupButton
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="Attach link"
+                      />
+                    }
+                  >
+                    <LinkIcon />
+                  </PopoverTrigger>
+                  <PopoverContent className="w-80 p-2">
+                    <form onSubmit={handleAddUrl} className="flex gap-2">
+                      <Input
+                        autoFocus
+                        type="url"
+                        placeholder="https://example.com"
+                        value={urlInput}
+                        onChange={(e) => setUrlInput(e.target.value)}
+                      />
+                      <Button type="submit" size="sm">Add</Button>
+                    </form>
+                  </PopoverContent>
+                </Popover>
 
-              <button
-                className="send-btn"
-                onClick={() => handleSend()}
-                disabled={chat.isLoading || (!input.trim() && attachments.length === 0)}
-              >
-                {chat.isLoading ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
-              </button>
-            </div>
-          </div>
+                <InputGroupButton
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Upload image or PDF"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <ImageIcon />
+                </InputGroupButton>
+                <input
+                  type="file"
+                  accept="image/*,application/pdf"
+                  ref={fileInputRef}
+                  hidden
+                  onChange={onFileInputChange}
+                />
+
+                <div className="ml-auto">
+                  {chat.isLoading ? (
+                    <InputGroupButton
+                      variant="default"
+                      size="icon-sm"
+                      aria-label="Stop generating"
+                      onClick={chat.cancel}
+                    >
+                      <SquareIcon />
+                    </InputGroupButton>
+                  ) : (
+                    <InputGroupButton
+                      variant="default"
+                      size="icon-sm"
+                      type="submit"
+                      aria-label="Send message"
+                      disabled={!input.trim() && attachments.length === 0}
+                      className={cn(
+                        "transition-opacity",
+                        !input.trim() && attachments.length === 0 && "opacity-50",
+                      )}
+                    >
+                      <SendIcon />
+                    </InputGroupButton>
+                  )}
+                </div>
+              </InputGroupAddon>
+            </InputGroup>
+          </form>
         </div>
       </main>
     </div>

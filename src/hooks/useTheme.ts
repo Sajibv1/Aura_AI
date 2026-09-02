@@ -11,12 +11,12 @@ export function useTheme() {
   useEffect(() => {
     const saved = loadJson<Theme>("aura-theme", "dark");
     setThemeState(saved);
-    document.documentElement.setAttribute("data-theme", saved);
+    document.documentElement.classList.toggle("dark", saved === "dark");
   }, []);
 
   const setTheme = useCallback((t: Theme) => {
     setThemeState(t);
-    document.documentElement.setAttribute("data-theme", t);
+    document.documentElement.classList.toggle("dark", t === "dark");
     saveJson("aura-theme", t);
   }, []);
 

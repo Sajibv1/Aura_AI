@@ -1,6 +1,13 @@
 "use client";
 
-import { Sun, Moon } from "lucide-react";
+import { MoonIcon, SunIcon } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 type Props = {
   theme: "dark" | "light";
@@ -9,8 +16,22 @@ type Props = {
 
 export function ThemeToggle({ theme, onToggle }: Props) {
   return (
-    <button className="icon-btn" onClick={onToggle} title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}>
-      {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
-    </button>
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={onToggle}
+            aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+          />
+        }
+      >
+        {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+      </TooltipTrigger>
+      <TooltipContent>
+        Switch to {theme === "dark" ? "light" : "dark"} mode
+      </TooltipContent>
+    </Tooltip>
   );
 }

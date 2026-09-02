@@ -1,8 +1,13 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { Play, Loader2, Check, X } from "lucide-react";
+import { CheckIcon, PlayIcon, XIcon } from "lucide-react";
+
 import { useCodeExecution } from "@/hooks/useCodeExecution";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 
 type Props = {
   language: string;
@@ -35,26 +40,52 @@ export function CodeBlock({ language, code }: Props) {
   }, [code, execute]);
 
   return (
-    <div className="code-block">
-      <div className="code-block-header">
-        <span className="code-block-lang">{language || "code"}</span>
-        <button className="code-run-btn" onClick={handleRun} disabled={loading}>
+    <div className="overflow-hidden rounded-lg border bg-muted/50">
+      <div className="flex items-center justify-between gap-2 border-b bg-muted px-3 py-1.5">
+        <Badge variant="secondary" className="font-mono text-xs">
+          {language || "code"}
+        </Badge>
+        <Button
+          variant="ghost"
+          size="xs"
+          onClick={handleRun}
+          disabled={loading}
+        >
           {loading ? (
-            <><Loader2 size={14} className="animate-spin" /> Running…</>
+            <>
+              <Spinner data-icon="inline-start" />
+              Running…
+            </>
           ) : state === "done" ? (
-            <><Check size={14} /> Done</>
+            <>
+              <CheckIcon data-icon="inline-start" />
+              Done
+            </>
           ) : state === "error" ? (
-            <><X size={14} /> Error</>
+            <>
+              <XIcon data-icon="inline-start" />
+              Error
+            </>
           ) : (
-            <><Play size={14} /> Run</>
+            <>
+              <PlayIcon data-icon="inline-start" />
+              Run
+            </>
           )}
-        </button>
+        </Button>
       </div>
-      <pre className="code-block-content"><code>{code}</code></pre>
+      <pre className="overflow-x-auto p-3 font-mono text-xs leading-relaxed">
+        <code>{code}</code>
+      </pre>
       {(output || error) && (
-        <div className={`code-block-output ${error ? "code-block-error" : ""}`}>
-          {output && <pre>{output}</pre>}
-          {error && <pre>{error}</pre>}
+        <div
+          className={cn(
+            "border-t px-3 py-2 font-mono text-xs",
+            error ? "text-destructive" : "text-muted-foreground",
+          )}
+        >
+          {output && <pre className="whitespace-pre-wrap">{output}</pre>}
+          {error && <pre className="whitespace-pre-wrap">{error}</pre>}
         </div>
       )}
     </div>

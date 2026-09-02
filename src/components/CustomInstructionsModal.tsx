@@ -1,7 +1,25 @@
 "use client";
 
 import { useState } from "react";
-import { Settings, X } from "lucide-react";
+import { SettingsIcon } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 type Props = {
   value: string;
@@ -18,34 +36,53 @@ export function CustomInstructionsModal({ value, onChange }: Props) {
   };
 
   return (
-    <>
-      <button className="icon-btn" onClick={() => { setDraft(value); setOpen(true); }} title="Custom Instructions">
-        <Settings size={18} />
-      </button>
-
-      {open && (
-        <div className="modal-overlay" onClick={() => setOpen(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Custom Instructions</h3>
-              <button className="icon-btn" onClick={() => setOpen(false)}><X size={18} /></button>
-            </div>
-            <p className="modal-desc">These instructions are prepended to the system prompt for every message.</p>
-            <textarea
-              className="instructions-textarea"
+    <Dialog open={open} onOpenChange={setOpen}>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <DialogTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Custom instructions"
+                  onClick={() => setDraft(value)}
+                />
+              }
+            />
+          }
+        >
+          <SettingsIcon />
+        </TooltipTrigger>
+        <TooltipContent>Custom instructions</TooltipContent>
+      </Tooltip>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Custom Instructions</DialogTitle>
+          <DialogDescription>
+            These instructions are prepended to the system prompt for every
+            message.
+          </DialogDescription>
+        </DialogHeader>
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="custom-instructions">Instructions</FieldLabel>
+            <Textarea
+              id="custom-instructions"
               placeholder="e.g. Always respond in Spanish. Be concise. Use bullet points."
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               rows={6}
-              autoFocus
             />
-            <div className="modal-footer">
-              <button className="btn-secondary" onClick={() => setOpen(false)}>Cancel</button>
-              <button className="btn-primary" onClick={handleSave}>Save</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
+          </Field>
+        </FieldGroup>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button onClick={handleSave}>Save</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
