@@ -333,7 +333,7 @@ export function ChatClient() {
         </header>
 
         <MessageScrollerProvider>
-          <MessageScroller className="mx-auto w-full max-w-3xl">
+          <MessageScroller className="mx-auto w-full max-w-5xl">
             <MessageScrollerViewport>
               <MessageScrollerContent className="px-4 py-6">
                 {messages.length === 0 ? (
@@ -434,7 +434,7 @@ export function ChatClient() {
         </MessageScrollerProvider>
 
         {suggestions.length > 0 && (
-          <div className="mx-auto w-full max-w-3xl px-4 pb-2">
+          <div className="mx-auto w-full max-w-5xl px-4 pb-2">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs text-muted-foreground">Follow-up:</span>
               {suggestions.map((s, i) => (
@@ -452,7 +452,7 @@ export function ChatClient() {
           </div>
         )}
 
-        <div className="mx-auto w-full max-w-3xl px-4 pb-4">
+        <div className="mx-auto w-full max-w-5xl px-4 pb-4">
           <form onSubmit={handleSend}>
             {attachments.length > 0 && (
               <AttachmentGroup className="mb-2 py-0">
