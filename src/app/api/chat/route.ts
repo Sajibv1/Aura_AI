@@ -3,7 +3,6 @@ import Groq from "groq-sdk";
 import type { ChatCompletionMessageParam, ChatCompletionChunk } from "groq-sdk/resources/chat/completions";
 import * as cheerio from "cheerio";
 import FirecrawlApp from "@mendable/firecrawl-js";
-import { auth } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -265,12 +264,6 @@ When you ARE asked to do data analysis or visualization:
 // ─── Route ───
 
 export async function POST(req: Request) {
-  const isAuthOptional = !process.env.AUTH_GOOGLE_ID;
-  const session = await auth();
-  if (!isAuthOptional && !session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   try {
     const body = await req.json() as {
       messages?: Message[];
