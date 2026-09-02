@@ -234,6 +234,16 @@ async function fetchPageContent(url: string): Promise<string> {
   return "";
 }
 
+// Users often paste links directly into the chat instead of using the
+// attach-link button; pick those up so they get scraped too.
+function extractInlineUrls(messages: Message[]): string[] {
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  const text = typeof lastUser?.content === "string" ? lastUser.content : "";
+  return (text.match(/https?:\/\/[^\s<>"')\]]+/g) || []).map((url) =>
+    url.replace(/[.,;:!?)\]]+$/, ""),
+  );
+}
+
 async function scrapeUrls(urls: string[]): Promise<string> {
   const results = await Promise.allSettled(urls.map(fetchPageContent));
 
@@ -283,12 +293,16 @@ function buildMessages(
 ): { instructions: string; input: InputMessage[] } {
   const input: InputMessage[] = [];
 
-  let systemContent = `You are Aura, an intelligent AI assistant. Be helpful, concise, and friendly.`;
+  let systemContent = `You are Aura, an intelligent AI assistant. Be helpful, concise, and friendly.
+
+You cannot browse the web by yourself, but this app automatically scrapes any URL the user shares (inline in their message or as an attachment) and provides the page content to you in this conversation. Therefore:
+- If webpage content has been provided in context below, you HAVE effectively visited that page — answer questions about it based on that content. Never claim you cannot access a URL whose content is in the context.
+- If the user asks you to visit a URL but no content for it appears in the context, do NOT say "I can't browse the web." Instead, tell them the page content could not be retrieved and ask them to share the link again.`;
   if (customInstructions) {
     systemContent += `\n\nCustom instructions: ${customInstructions}`;
   }
   if (scrapedContext) {
-    systemContent += `\n\nYou have been provided with the following scraped webpage context. Use it to answer the user's queries if relevant.\n${scrapedContext}`;
+    systemContent += `\n\nYou have been provided with the following scraped webpage context. Use it to answer the user's queries if relevant. If content for a URL is included, treat it as the page's content — do not claim you cannot access it. If a URL's content could not be retrieved, say so plainly and ask the user to re-share the link.\n${scrapedContext}`;
   }
 
   const instructions = `${systemContent}
@@ -352,8 +366,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid messages format" }, { status: 400 });
     }
 
+    const attachmentUrls =
+      body.attachments?.filter((a: Attachment) => a.type === "url").map((a: Attachment) => a.data) || [];
+    const urls = [...new Set([...attachmentUrls, ...extractInlineUrls(body.messages)])].slice(0, 5);
+
     const [scrapedContext, pdfContext] = await Promise.all([
-      scrapeUrls(body.attachments?.filter((a: Attachment) => a.type === "url").map((a: Attachment) => a.data) || []),
+      scrapeUrls(urls),
       parsePdfs(body.attachments?.filter((a: Attachment) => a.type === "pdf") || []),
     ]);
     const combinedContext = scrapedContext + pdfContext;
